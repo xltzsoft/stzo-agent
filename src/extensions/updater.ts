@@ -11,12 +11,24 @@ export default function updaterExtension(pi: ExtensionAPI) {
 	async function check(ctx: ExtensionContext, opts: { force?: boolean; install?: boolean } = {}) {
 		if (running) return;
 		if (!shouldCheck(opts.force)) {
-			const pending = loadState().installedVersion;
-			if (pending && compareVersions(pending, VERSION) > 0 && ctx.hasUI) {
-				ctx.ui.setStatus("stzo-update", ctx.ui.theme.fg("success", `已更新到 v${pending}，重启生效`));
+			try {
+				showPending(ctx);
+			} catch {
+				/* stale ctx */
 			}
 			return;
 		}
+		await runCheck(ctx, opts);
+	}
+
+	function showPending(ctx: ExtensionContext) {
+		const pending = loadState().installedVersion;
+		if (pending && compareVersions(pending, VERSION) > 0 && ctx.hasUI) {
+			ctx.ui.setStatus("stzo-update", ctx.ui.theme.fg("success", `已更新到 v${pending}，重启生效`));
+		}
+	}
+
+	async function runCheck(ctx: ExtensionContext, opts: { force?: boolean; install?: boolean }) {
 		running = true;
 		try {
 			const rel = await fetchLatestRelease();
@@ -58,11 +70,12 @@ export default function updaterExtension(pi: ExtensionAPI) {
 				if (c.announcement && ctx.hasUI) ctx.ui.notify(c.announcement, "info");
 				if (c.min_version && compareVersions(VERSION, c.min_version) < 0) {
 					ctx.ui.notify(`当前版本 v${VERSION} 已停止支持，请执行 /update 更新到 v${c.min_version} 以上`, "error");
-					void check(ctx, { force: true, install: true });
+					void check(ctx, { force: true, install: true }).catch(() => {});
 				}
 			})
 			.catch(() => {});
-		setTimeout(() => void check(ctx), 3000).unref?.();
+		// check() may run after a session switch made ctx stale; swallow instead of crashing.
+		setTimeout(() => void check(ctx).catch(() => {}), 3000).unref?.();
 	});
 
 	pi.registerCommand("update", {

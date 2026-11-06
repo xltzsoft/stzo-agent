@@ -121,11 +121,18 @@ a {
 
 .shell {
 	display: grid;
-	grid-template-columns: var(--sidebar) 1fr;
+	grid-template-columns: var(--sidebar) minmax(0, 1fr);
 	height: 100%;
 }
 .shell.collapsed {
-	grid-template-columns: 0 1fr;
+	grid-template-columns: 0 minmax(0, 1fr);
+}
+.picker,
+.picker-btn {
+	min-width: 0;
+}
+.topbar .picker {
+	flex: 0 1 auto;
 }
 .drag {
 	-webkit-app-region: drag;

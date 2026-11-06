@@ -1,5 +1,5 @@
 import { memo, useMemo, useState } from "react";
-import type { Block, ChatMessage, ToolRun } from "../lib/rpc";
+import { errorText, type Block, type ChatMessage, type ToolRun } from "../lib/rpc";
 import { IconChevron, IconChevronRight } from "./icons";
 import { Markdown } from "./Markdown";
 
@@ -168,10 +168,13 @@ function Thinking({ text, live }: { text: string; live: boolean }) {
 	);
 }
 
-function friendlyError(msg: string) {
+function friendlyError(raw: string) {
+	const msg = errorText(raw);
 	if (/insufficient|余额|balance|quota|402/i.test(msg)) return { text: "账户余额不足，充值后即可继续。", action: "recharge" as const };
 	if (/401|unauthori[sz]ed|invalid.*key/i.test(msg)) return { text: "授权已失效，请重新登录。", action: "login" as const };
 	if (/abort/i.test(msg)) return { text: "已停止。", action: undefined };
+	if (/upstream|502|503|504|unavailable|overloaded|terminal|timed? ?out/i.test(msg))
+		return { text: `模型服务暂时出错（${msg}）。回复可能不完整，可以重新发送，或在右上角换一个模型。`, action: undefined };
 	return { text: msg || "请求失败", action: undefined };
 }
 

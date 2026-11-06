@@ -103,6 +103,15 @@ export function App() {
 
 	useEffect(() => save(LS.sidebar, collapsed), [collapsed]);
 
+	// Narrow windows: give the conversation the room, the sidebar comes back with ⌘B / the toggle.
+	useEffect(() => {
+		const mq = window.matchMedia("(max-width: 720px)");
+		const apply = () => mq.matches && setCollapsed(true);
+		apply();
+		mq.addEventListener("change", apply);
+		return () => mq.removeEventListener("change", apply);
+	}, []);
+
 	// ---- updates --------------------------------------------------------------------------
 	const checkUpdate = useCallback(async (manual: boolean) => {
 		setUpdate({ state: "checking" });
@@ -444,7 +453,7 @@ export function App() {
 					<div className="banner">
 						<span className="spinner" />
 						<span className="grow">
-							请求失败，正在重试（{st.retry.attempt}/{st.retry.maxAttempts}）
+							模型服务出错，正在重试（{st.retry.attempt}/{st.retry.maxAttempts}）{st.retry.error ? `：${st.retry.error}` : ""}
 						</span>
 					</div>
 				)}

@@ -44,8 +44,20 @@ export default async function accountExtension(pi: ExtensionAPI) {
 	});
 	const card = (title: string, lines: string[], tone?: CardData["tone"]) => pi.appendEntry(CARD, { title, lines, tone });
 
+	// Async work can outlive its session (switch_session / new_session / reload make the captured
+	// ctx stale, and touching it throws). Never let that become an unhandled rejection: it would
+	// take the whole agent process down.
+	const quietly = (p: Promise<unknown>) => void p.catch(() => {});
+
 	const showBalance = (ctx: ExtensionContext) => {
-		if (!ctx.hasUI || DESKTOP) return;
+		try {
+			paintBalance(ctx);
+		} catch {
+			/* stale ctx */
+		}
+	};
+	const paintBalance = (ctx: ExtensionContext) => {
+		if (DESKTOP || !ctx.hasUI) return;
 		if (!account) {
 			ctx.ui.setStatus("stzo", ctx.ui.theme.fg("warning", "未登录 · /signin"));
 			return;
@@ -62,8 +74,12 @@ export default async function accountExtension(pi: ExtensionAPI) {
 			await refreshMe(account);
 		} catch (err) {
 			if (err instanceof BridgeError && err.status === 401) {
-				ctx.ui.notify(DESKTOP ? "STZO 登录已过期，请重新登录" : "STZO 登录已过期，请执行 /signin 重新登录", "warning");
 				account = undefined;
+				try {
+					ctx.ui.notify(DESKTOP ? "STZO 登录已过期，请重新登录" : "STZO 登录已过期，请执行 /signin 重新登录", "warning");
+				} catch {
+					/* stale ctx */
+				}
 			}
 		}
 		showBalance(ctx);
@@ -78,10 +94,10 @@ export default async function accountExtension(pi: ExtensionAPI) {
 			if (ctx.hasUI && !DESKTOP) ctx.ui.notify(`欢迎使用 ${BRAND.name}！输入 /signin 登录账号（没有账号会引导你注册）`, "info");
 			return;
 		}
-		void refreshAccountModels(pi, account);
-		void refreshBalance(ctx, true);
+		quietly(refreshAccountModels(pi, account));
+		quietly(refreshBalance(ctx, true));
 		// If nothing was chosen yet (or the chosen model is gone), switch to a relay model.
-		if (!ctx.model) await selectDefault(ctx);
+		if (!ctx.model) await selectDefault(ctx).catch(() => {});
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
@@ -95,7 +111,7 @@ export default async function accountExtension(pi: ExtensionAPI) {
 		const text = String(msg.errorMessage || "");
 		if (/insufficient|余额|balance|quota|402/i.test(text)) {
 			ctx.ui.notify(DESKTOP ? "STZO 余额不足，请在左下角账户处充值" : "STZO 余额不足：输入 /recharge 购买兑换码，或 /redeem <兑换码> 充值", "error");
-			void refreshBalance(ctx, true);
+			quietly(refreshBalance(ctx, true));
 		} else if (/401|invalid.*key|unauthori[sz]ed/i.test(text) && String(ctx.model?.provider || "").startsWith("stzo-")) {
 			ctx.ui.notify(DESKTOP ? "API Key 已失效，请重新登录" : "API Key 已失效，请执行 /signin 重新授权", "error");
 		}

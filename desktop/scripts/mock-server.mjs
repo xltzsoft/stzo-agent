@@ -13,6 +13,7 @@ const keys = [
 	{ id: 2, key: "sk-mock-31", group_id: 31, group_name: "Claude Plus", platform: "anthropic", rate_multiplier: 1, api: "anthropic-messages", base_url: BASE },
 ];
 let approveAt = 0;
+let flaky = 0;
 
 const readBody = (req) =>
 	new Promise((ok) => {
@@ -28,7 +29,7 @@ function chunks(text, n = 6) {
 	return out;
 }
 
-async function stream(res, blocks, stop) {
+async function stream(res, blocks, stop, failAfter = false) {
 	res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
 	const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
 	ev("message_start", { message: { id: `msg_${Date.now()}`, type: "message", role: "assistant", model: "claude-sonnet-4-6", content: [], stop_reason: null, usage: { input_tokens: 1800, output_tokens: 1 } } });
@@ -55,6 +56,10 @@ async function stream(res, blocks, stop) {
 		}
 		ev("content_block_stop", { index });
 	}
+	if (failAfter) {
+		ev("error", { error: { type: "overloaded_error", message: "Upstream request failed" } });
+		return res.end();
+	}
 	ev("message_delta", { delta: { stop_reason: stop }, usage: { output_tokens: 240 } });
 	ev("message_stop", {});
 	res.end();
@@ -72,6 +77,12 @@ function script(messages) {
 	const last = messages[messages.length - 1];
 	const prompt = typeof last.content === "string" ? last.content : (last.content.find((b) => b.type === "text")?.text ?? "");
 	if (/余额|balance/.test(prompt) && turns === 0) return { error: 402 };
+	if (/上游|upstream/i.test(prompt) && turns === 0) {
+		flaky = (flaky + 1) % 3;
+		// Like Sub2API when the upstream never sends its terminal event: text streams, then an error.
+		if (flaky !== 0) return { blocks: [{ type: "text", text: `你好！这是第 ${flaky} 次尝试的回复。` }], stop: "end_turn", failAfter: true };
+		return { blocks: [{ type: "text", text: "你好！重试后这次成功了。" }], stop: "end_turn" };
+	}
 	if (turns === 0)
 		return {
 			blocks: [
@@ -156,7 +167,7 @@ createServer(async (req, res) => {
 	if (p === "/v1/messages") {
 		const s = script(body.messages);
 		if (s.error) return json(402, { type: "error", error: { type: "insufficient_balance", message: "Insufficient balance" } });
-		return stream(res, s.blocks, s.stop);
+		return stream(res, s.blocks, s.stop, s.failAfter);
 	}
 	json(404, { ok: false, error: `mock: ${p}` });
 }).listen(PORT, "127.0.0.1", () => console.log(`mock relay on ${BASE}`));

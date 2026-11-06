@@ -112,6 +112,20 @@ export interface AgentState {
 const ANSI = /\u001b\[[0-9;]*[A-Za-z]|\u001b\][^\u0007]*\u0007/g;
 export const stripAnsi = (s: string) => s.replace(ANSI, "");
 
+/** Provider errors often arrive as raw JSON bodies; pull out the human-readable message. */
+export function errorText(raw?: string): string {
+	const s = (raw ?? "").trim();
+	const m = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(s);
+	if (m) {
+		try {
+			return JSON.parse(`"${m[1]}"`);
+		} catch {
+			return m[1];
+		}
+	}
+	return s;
+}
+
 let noticeSeq = 0;
 export type NoticeSink = (n: Notice) => void;
 
@@ -439,8 +453,14 @@ export class Agent {
 				this.set({ compacting: false }, true);
 				void this.request({ type: "get_messages" }).then((r) => this.set({ messages: r.messages ?? [] }, true));
 				return;
-			case "auto_retry_start":
-				return this.set({ retry: { attempt: ev.attempt, maxAttempts: ev.maxAttempts, error: ev.errorMessage } }, true);
+			case "auto_retry_start": {
+				// pi drops the failed attempt from the conversation before retrying (get_messages won't
+				// return it either), so remove it here instead of stacking duplicate answers.
+				const msgs = this.state.messages;
+				const last = msgs[msgs.length - 1];
+				const messages = last?.role === "assistant" && last.stopReason === "error" ? msgs.slice(0, -1) : msgs;
+				return this.set({ messages, retry: { attempt: ev.attempt, maxAttempts: ev.maxAttempts, error: errorText(ev.errorMessage) } }, true);
+			}
 			case "auto_retry_end":
 				return this.set({ retry: undefined }, true);
 			case "entry_appended":
