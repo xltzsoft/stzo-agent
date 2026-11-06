@@ -1,0 +1,30 @@
+[Unit]
+Description=STZO Agent bridge (device login, redeem, OTA mirror)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stzo-agent
+Group=stzo-agent
+WorkingDirectory=/opt/stzo-agent/server
+EnvironmentFile=/etc/stzo-agent/server.env
+ExecStart=/usr/bin/node /opt/stzo-agent/server/server.mjs
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/stzo-agent
+StateDirectory=stzo-agent
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

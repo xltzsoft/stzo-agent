@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>STZO Agent — 终端里的 AI 编程助手</title>
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --ink:#1d1d1b; --muted:#6b6a65; --line:#e4e2dc; --accent:#c2410c; --code:#f0eee8; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141413; --card:#1e1e1c; --ink:#ecebe6; --muted:#9b9a94; --line:#33322f; --accent:#f97316; --code:#262624; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:56px 24px 80px; }
+  h1 { font-size:34px; line-height:1.2; margin:0 0 8px; letter-spacing:-.5px; }
+  h1 span { color:var(--accent); }
+  .lead { color:var(--muted); font-size:18px; margin:0 0 36px; }
+  h2 { font-size:18px; margin:40px 0 12px; }
+  pre { background:var(--code); border:1px solid var(--line); border-radius:10px; padding:14px 16px; overflow-x:auto; margin:8px 0;
+        font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .tabs { display:flex; gap:6px; margin-top:8px; }
+  .tabs button { font:inherit; font-size:14px; padding:6px 12px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--muted); cursor:pointer; }
+  .tabs button.on { color:var(--ink); border-color:var(--ink); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
+  .item { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .item b { display:block; margin-bottom:2px; }
+  .item span { color:var(--muted); font-size:14px; }
+  table { border-collapse:collapse; width:100%; font-size:15px; }
+  td { padding:7px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+  td:first-child { font-family:ui-monospace,Menlo,monospace; white-space:nowrap; padding-right:20px; }
+  a { color:var(--accent); }
+  footer { margin-top:48px; color:var(--muted); font-size:14px; }
+  #ver { color:var(--muted); font-size:14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>STZO <span>Agent</span></h1>
+  <p class="lead">终端里的 AI 编程助手。登录即用 Claude 等模型，按量计费，余额不足时在终端里直接充值。 <span id="ver"></span></p>
+
+  <h2>1. 安装</h2>
+  <div class="tabs"><button class="on" data-t="unix">macOS / Linux</button><button data-t="win">Windows</button></div>
+  <pre id="unix">curl -fsSL https://gc.stzo.cn/agent/install.sh | bash</pre>
+  <pre id="win" hidden>irm https://gc.stzo.cn/agent/install.ps1 | iex</pre>
+  <p style="color:var(--muted);font-size:14px">需要 Node.js 22.19 或更高版本。也可从 <a href="https://github.com/xltzsoft/stzo-agent/releases">GitHub Releases</a> 下载 tgz 后执行 <code>npm i -g 文件名.tgz</code>。</p>
+
+  <h2>2. 登录</h2>
+  <pre>stzo login</pre>
+  <p>浏览器会打开授权页，用 <a href="/">gc.stzo.cn</a> 账号确认即可（没有账号先 <a href="/register">注册</a>）。</p>
+
+  <h2>3. 开始使用</h2>
+  <pre>cd 你的项目
+stzo</pre>
+
+  <h2>常用命令</h2>
+  <table>
+    <tr><td>/stzo</td><td>账户菜单：登录、余额、充值、兑换、退出</td></tr>
+    <tr><td>/recharge</td><td>查看充值卡并跳转发卡网购买</td></tr>
+    <tr><td>/redeem &lt;兑换码&gt;</td><td>在终端里直接兑换 CDK</td></tr>
+    <tr><td>/model</td><td>切换模型</td></tr>
+    <tr><td>/plan</td><td>只读规划模式：先分析、出计划，再动手</td></tr>
+    <tr><td>/update</td><td>立即更新（默认后台自动更新）</td></tr>
+  </table>
+
+  <h2>内置插件</h2>
+  <div class="grid">
+    <div class="item"><b>规划模式</b><span>/plan，只读探索并生成步骤</span></div>
+    <div class="item"><b>子代理</b><span>scout / planner / worker / reviewer 并行协作</span></div>
+    <div class="item"><b>待办</b><span>模型自己维护任务清单，/todos 查看</span></div>
+    <div class="item"><b>危险操作确认</b><span>rm -rf、强推等命令先问你</span></div>
+    <div class="item"><b>受保护路径</b><span>.env、.git 等不被改写</span></div>
+    <div class="item"><b>完成通知</b><span>任务完成时桌面提醒</span></div>
+  </div>
+
+  <footer>
+    充值：<a href="https://www.16688.com.cn/shop/S670281" rel="noopener">发卡网</a> ·
+    文档：<a href="/docs/">gc.stzo.cn/docs</a> ·
+    源码：<a href="https://github.com/xltzsoft/stzo-agent">GitHub</a> ·
+    基于 <a href="https://github.com/earendil-works/pi">pi</a>
+  </footer>
+</main>
+<script>
+  for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => {
+    for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x === b);
+    document.getElementById("unix").hidden = b.dataset.t !== "unix";
+    document.getElementById("win").hidden = b.dataset.t !== "win";
+  };
+  if (/Windows/.test(navigator.userAgent)) document.querySelector('[data-t="win"]').click();
+  fetch("./api/update/latest").then((r) => r.json()).then((j) => { if (j.ok) document.getElementById("ver").textContent = "最新版本 v" + j.data.version; }).catch(() => {});
+</script>
+</body>
+</html>

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>授权 STZO Agent 登录</title>
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --ink:#1d1d1b; --muted:#6b6a65; --line:#e4e2dc; --accent:#c2410c; --ok:#15803d; --err:#b91c1c; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141413; --card:#1e1e1c; --ink:#ecebe6; --muted:#9b9a94; --line:#33322f; --accent:#f97316; --ok:#4ade80; --err:#f87171; } }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--ink);
+         font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; padding:24px; }
+  .card { width:100%; max-width:440px; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:28px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  .code { font:600 26px/1 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:3px; text-align:center;
+          padding:14px; border:1px dashed var(--line); border-radius:10px; margin:12px 0 16px; }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px solid var(--line); font-size:14px; }
+  .row span:first-child { color:var(--muted); }
+  label.g { display:flex; gap:10px; align-items:flex-start; padding:8px 10px; border:1px solid var(--line); border-radius:8px; margin:6px 0; cursor:pointer; }
+  label.g small { color:var(--muted); display:block; }
+  button { font:inherit; border-radius:9px; padding:10px 16px; border:1px solid var(--line); background:transparent; color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  .actions { display:flex; gap:10px; margin-top:18px; }
+  .actions .primary { flex:1; }
+  input[type=text] { font:600 18px ui-monospace,Menlo,monospace; letter-spacing:2px; width:100%; padding:10px 12px; border-radius:9px;
+                     border:1px solid var(--line); background:transparent; color:var(--ink); text-transform:uppercase; }
+  .msg { margin-top:14px; font-size:14px; }
+  .msg.err { color:var(--err); } .msg.ok { color:var(--ok); }
+  a { color:var(--accent); }
+  .hidden { display:none; }
+  h2 { font-size:14px; color:var(--muted); font-weight:500; margin:18px 0 6px; }
+</style>
+</head>
+<body>
+<main class="card">
+  <h1>授权 STZO Agent</h1>
+  <p class="sub">终端里的 STZO Agent 正在请求使用你的账号。</p>
+
+  <section id="enter" class="hidden">
+    <p>请输入终端中显示的授权码：</p>
+    <input id="codeInput" type="text" maxlength="9" placeholder="XXXX-XXXX" autocomplete="off">
+    <div class="actions"><button class="primary" id="lookupBtn">继续</button></div>
+  </section>
+
+  <section id="needLogin" class="hidden">
+    <p>你还没有登录网站。请先 <a href="/login" target="_blank" rel="noopener">登录</a> 或 <a href="/register" target="_blank" rel="noopener">注册</a>，完成后回到本页（会自动刷新）。</p>
+    <div class="actions"><button id="recheckBtn">我已登录</button></div>
+  </section>
+
+  <section id="confirm" class="hidden">
+    <div class="code" id="codeShow"></div>
+    <div class="row"><span>账号</span><span id="who"></span></div>
+    <div class="row"><span>设备</span><span id="dev"></span></div>
+    <div class="row"><span>版本</span><span id="ver"></span></div>
+    <h2>允许使用的分组（会为此设备单独创建 API Key）</h2>
+    <div id="groups"></div>
+    <p class="sub" style="margin-top:10px;font-size:13px">请确认授权码与终端中一致。不认识的请求请点“拒绝”。</p>
+    <div class="actions">
+      <button id="denyBtn">拒绝</button>
+      <button class="primary" id="approveBtn">授权登录</button>
+    </div>
+  </section>
+
+  <section id="done" class="hidden"><p class="msg ok" id="doneMsg"></p></section>
+  <p class="msg" id="msg"></p>
+</main>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const show = (id) => { for (const s of ["enter","needLogin","confirm","done"]) $(s).classList.toggle("hidden", s !== id); };
+  const msg = (t, cls) => { $("msg").textContent = t || ""; $("msg").className = "msg " + (cls || ""); };
+  const token = () => localStorage.getItem("auth_token");
+  const params = new URLSearchParams(location.search);
+  let userCode = (params.get("code") || "").toUpperCase();
+  let flow = null;
+
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({ headers: {} }, opts));
+    let body = null;
+    try { body = await res.json(); } catch (e) {}
+    return { status: res.status, body };
+  }
+
+  async function profile() {
+    const t = token();
+    if (!t) return null;
+    const r = await api("/api/v1/user/profile", { headers: { Authorization: "Bearer " + t } });
+    return r.status === 200 && r.body && r.body.code === 0 ? r.body.data : null;
+  }
+
+  async function lookup() {
+    msg("");
+    const r = await api("./api/device/lookup?code=" + encodeURIComponent(userCode));
+    if (!r.body || !r.body.ok) { show("enter"); msg((r.body && r.body.error) || "授权码无效", "err"); return; }
+    flow = r.body.data;
+    if (flow.status !== "pending") { show("done"); $("doneMsg").textContent = "该请求已处理，可以关闭本页。"; return; }
+    const me = await profile();
+    if (!me) { show("needLogin"); return; }
+    $("codeShow").textContent = flow.user_code;
+    $("who").textContent = me.email || me.username || ("#" + me.id);
+    $("dev").textContent = flow.device_name + (flow.os ? " · " + flow.os : "");
+    $("ver").textContent = flow.version || "-";
+    const g = await api("/api/v1/groups/available", { headers: { Authorization: "Bearer " + token() } });
+    const groups = (g.body && g.body.data) || [];
+    const box = $("groups");
+    box.textContent = "";
+    if (!groups.length) { box.textContent = "当前账号没有可用分组。"; $("approveBtn").disabled = true; }
+    for (const grp of groups) {
+      const l = document.createElement("label"); l.className = "g";
+      const c = document.createElement("input"); c.type = "checkbox"; c.value = grp.id; c.checked = true;
+      const d = document.createElement("div");
+      const n = document.createElement("div"); n.textContent = grp.name + "  ×" + (grp.rate_multiplier ?? 1);
+      const s = document.createElement("small"); s.textContent = (grp.platform || "") + (grp.description ? " · " + grp.description : "");
+      d.append(n, s); l.append(c, d); box.append(l);
+    }
+    show("confirm");
+  }
+
+  async function decide(approve) {
+    $("approveBtn").disabled = $("denyBtn").disabled = true;
+    msg(approve ? "正在授权并创建 API Key…" : "");
+    const ids = Array.from(document.querySelectorAll("#groups input:checked")).map((c) => Number(c.value));
+    if (approve && ids.length === 0) { msg("请至少选择一个分组", "err"); $("approveBtn").disabled = $("denyBtn").disabled = false; return; }
+    const r = await api(approve ? "./api/device/approve" : "./api/device/deny", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token() },
+      body: JSON.stringify({ user_code: flow.user_code, group_ids: ids }),
+    });
+    if (r.body && r.body.ok) {
+      show("done"); msg("");
+      $("doneMsg").textContent = approve ? "✓ 授权成功，回到终端即可开始使用。可以关闭本页。" : "已拒绝该请求。";
+    } else {
+      msg((r.body && r.body.error) || "操作失败，请重试", "err");
+      $("approveBtn").disabled = $("denyBtn").disabled = false;
+    }
+  }
+
+  $("lookupBtn").onclick = () => { userCode = $("codeInput").value.trim().toUpperCase(); if (userCode) lookup(); };
+  $("codeInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("lookupBtn").click(); });
+  $("recheckBtn").onclick = () => lookup();
+  $("approveBtn").onclick = () => decide(true);
+  $("denyBtn").onclick = () => decide(false);
+  window.addEventListener("storage", (e) => { if (e.key === "auth_token" && e.newValue && flow) lookup(); });
+  window.addEventListener("focus", () => { if (!$("needLogin").classList.contains("hidden")) lookup(); });
+
+  if (userCode) lookup(); else show("enter");
+})();
+</script>
+</body>
+</html>
