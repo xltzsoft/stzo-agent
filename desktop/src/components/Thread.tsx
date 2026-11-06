@@ -170,8 +170,8 @@ function Thinking({ text, live }: { text: string; live: boolean }) {
 
 function friendlyError(raw: string) {
 	const msg = errorText(raw);
-	if (/insufficient|余额|balance|quota|402/i.test(msg)) return { text: "账户余额不足，充值后即可继续。", action: "recharge" as const };
-	if (/401|unauthori[sz]ed|invalid.*key/i.test(msg)) return { text: "授权已失效，请重新登录。", action: "login" as const };
+	if (/insufficient|余额|balance|quota|\b402\b/i.test(msg)) return { text: "账户余额不足，充值后即可继续。", action: "recharge" as const };
+	if (/\b401\b|unauthori[sz]ed|invalid[_ ]api[_ ]key|incorrect api key|api key (is )?(invalid|expired|disabled)/i.test(msg)) return { text: "授权已失效，请重新登录。", action: "login" as const };
 	if (/abort/i.test(msg)) return { text: "已停止。", action: undefined };
 	if (/upstream|502|503|504|unavailable|overloaded|terminal|timed? ?out/i.test(msg))
 		return { text: `模型服务暂时出错（${msg}）。回复可能不完整，可以重新发送，或在右上角换一个模型。`, action: undefined };

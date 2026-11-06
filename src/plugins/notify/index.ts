@@ -51,7 +51,10 @@ function notify(title: string, body: string): void {
 export default function (pi: ExtensionAPI) {
 	// `agent_end` fires after each low-level run; Pi may still retry, compact,
 	// or continue with queued follow-ups. Notify only after the full run settles.
-	pi.on("agent_settled", async () => {
-		notify("Pi", "Ready for input");
+	pi.on("agent_settled", async (_event, ctx) => {
+		// Only in the interactive TUI: in rpc/json/print mode stdout is a data stream, and an escape
+		// sequence there corrupts the JSONL the desktop app parses.
+		if (!ctx.hasUI || !process.stdout.isTTY || process.env.STZO_DESKTOP === "1") return;
+		notify("STZO Agent", "Ready for input");
 	});
 }

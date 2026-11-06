@@ -109,10 +109,10 @@ export default async function accountExtension(pi: ExtensionAPI) {
 		const msg = event?.message;
 		if (msg?.role !== "assistant" || msg?.stopReason !== "error") return;
 		const text = String(msg.errorMessage || "");
-		if (/insufficient|余额|balance|quota|402/i.test(text)) {
+		if (/insufficient|余额|balance|quota|\b402\b/i.test(text)) {
 			ctx.ui.notify(DESKTOP ? "STZO 余额不足，请在左下角账户处充值" : "STZO 余额不足：输入 /recharge 购买兑换码，或 /redeem <兑换码> 充值", "error");
 			quietly(refreshBalance(ctx, true));
-		} else if (/401|invalid.*key|unauthori[sz]ed/i.test(text) && String(ctx.model?.provider || "").startsWith("stzo-")) {
+		} else if (/\b401\b|unauthori[sz]ed|invalid[_ ]api[_ ]key|incorrect api key|api key (is )?(invalid|expired|disabled)/i.test(text) && String(ctx.model?.provider || "").startsWith("stzo-")) {
 			ctx.ui.notify(DESKTOP ? "API Key 已失效，请重新登录" : "API Key 已失效，请执行 /signin 重新授权", "error");
 		}
 	});

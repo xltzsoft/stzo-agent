@@ -53,12 +53,32 @@ function guessModel(api: string, id: string): ChatModelConfig {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: isClaude ? 200000 : api === "google-generative-ai" ? 1000000 : 128000,
 		maxTokens: isClaude ? 64000 : 32000,
+		// DeepSeek V4 upstreams reject reasoning_effort "medium" (400 "supported values: none, low,
+		// high, xhigh, max"). Mark it unsupported like pi's own DeepSeek catalog; pi clamps to "high".
+		...(api === "openai-completions" && /deepseek-v[34]/.test(lower)
+			? { thinkingLevelMap: { minimal: null, low: "low", medium: null, high: "high", max: "max" } }
+			: {}),
 	};
+}
+
+/**
+ * The relay forwards chat completions to many upstreams (Mistral, DeepSeek, Qwen…). Several reject
+ * the "developer" role (422 "Input tag 'developer' … does not match") and the OpenAI-only `store`
+ * field, and pi enables both for any non-OpenAI base URL. "system" is accepted everywhere,
+ * including OpenAI reasoning models, so always use it.
+ */
+function relayCompat(api: string, compat: any, openaiNative: boolean) {
+	if (api !== "openai-completions") return compat;
+	return { ...(compat || {}), supportsDeveloperRole: false, ...(openaiNative ? {} : { supportsStore: false }) };
 }
 
 export function toModelConfig(k: RelayKey, id: string): ChatModelConfig {
 	const known = catalogEntry(k.api, id);
-	if (!known) return guessModel(k.api, id);
+	if (!known) {
+		const guessed = guessModel(k.api, id);
+		const compat = relayCompat(k.api, undefined, false);
+		return compat ? { ...guessed, compat } : guessed;
+	}
 	const rate = k.rate_multiplier && k.rate_multiplier > 0 ? k.rate_multiplier : 1;
 	return {
 		id,
@@ -76,7 +96,7 @@ export function toModelConfig(k: RelayKey, id: string): ChatModelConfig {
 		maxTokens: known.maxTokens ?? 32000,
 		thinkingLevelMap: known.thinkingLevelMap,
 		promptCache: known.promptCache,
-		compat: known.compat,
+		compat: relayCompat(k.api, known.compat, !!(OPENAI_MODELS as any)[known.id]),
 		inputLimits: known.inputLimits,
 	};
 }
