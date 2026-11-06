@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import {
@@ -9,6 +8,7 @@ import {
 	getShop,
 	loadAccount,
 	logout,
+	openUrl,
 	redeem,
 	refreshMe,
 	startDeviceLogin,
@@ -21,29 +21,13 @@ import { pickDefaultModel, refreshAccountModels, registerAccountProviders, unreg
 const CARD = "stzo-card";
 const BALANCE_REFRESH_MS = 60_000;
 const LOW_BALANCE = 1;
+/** The desktop app shows account state in its own UI and restarts the agent after sign-in. */
+const DESKTOP = process.env.STZO_DESKTOP === "1";
 
 interface CardData {
 	title: string;
 	lines: string[];
 	tone?: "info" | "success" | "warning" | "error";
-}
-
-export function openUrl(url: string): boolean {
-	if (process.env.SSH_CONNECTION || process.env.SSH_TTY) return false;
-	try {
-		const [cmd, args] =
-			process.platform === "darwin"
-				? ["open", [url]]
-				: process.platform === "win32"
-					? ["cmd", ["/c", "start", "", url.replace(/&/g, "^&")]]
-					: ["xdg-open", [url]];
-		const child = spawn(cmd as string, args as string[], { stdio: "ignore", detached: true, windowsHide: true });
-		child.on("error", () => {});
-		child.unref();
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 export default async function accountExtension(pi: ExtensionAPI) {
@@ -61,7 +45,7 @@ export default async function accountExtension(pi: ExtensionAPI) {
 	const card = (title: string, lines: string[], tone?: CardData["tone"]) => pi.appendEntry(CARD, { title, lines, tone });
 
 	const showBalance = (ctx: ExtensionContext) => {
-		if (!ctx.hasUI) return;
+		if (!ctx.hasUI || DESKTOP) return;
 		if (!account) {
 			ctx.ui.setStatus("stzo", ctx.ui.theme.fg("warning", "未登录 · /signin"));
 			return;
@@ -78,7 +62,7 @@ export default async function accountExtension(pi: ExtensionAPI) {
 			await refreshMe(account);
 		} catch (err) {
 			if (err instanceof BridgeError && err.status === 401) {
-				ctx.ui.notify("STZO 登录已过期，请执行 /signin 重新登录", "warning");
+				ctx.ui.notify(DESKTOP ? "STZO 登录已过期，请重新登录" : "STZO 登录已过期，请执行 /signin 重新登录", "warning");
 				account = undefined;
 			}
 		}
@@ -91,7 +75,7 @@ export default async function accountExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		showBalance(ctx);
 		if (!account) {
-			if (ctx.hasUI) ctx.ui.notify(`欢迎使用 ${BRAND.name}！输入 /signin 登录账号（没有账号会引导你注册）`, "info");
+			if (ctx.hasUI && !DESKTOP) ctx.ui.notify(`欢迎使用 ${BRAND.name}！输入 /signin 登录账号（没有账号会引导你注册）`, "info");
 			return;
 		}
 		void refreshAccountModels(pi, account);
@@ -110,10 +94,10 @@ export default async function accountExtension(pi: ExtensionAPI) {
 		if (msg?.role !== "assistant" || msg?.stopReason !== "error") return;
 		const text = String(msg.errorMessage || "");
 		if (/insufficient|余额|balance|quota|402/i.test(text)) {
-			ctx.ui.notify("STZO 余额不足：输入 /recharge 购买兑换码，或 /redeem <兑换码> 充值", "error");
+			ctx.ui.notify(DESKTOP ? "STZO 余额不足，请在左下角账户处充值" : "STZO 余额不足：输入 /recharge 购买兑换码，或 /redeem <兑换码> 充值", "error");
 			void refreshBalance(ctx, true);
 		} else if (/401|invalid.*key|unauthori[sz]ed/i.test(text) && String(ctx.model?.provider || "").startsWith("stzo-")) {
-			ctx.ui.notify("API Key 已失效，请执行 /signin 重新授权", "error");
+			ctx.ui.notify(DESKTOP ? "API Key 已失效，请重新登录" : "API Key 已失效，请执行 /signin 重新授权", "error");
 		}
 	});
 

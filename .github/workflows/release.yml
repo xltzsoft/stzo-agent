@@ -1,24 +1,35 @@
 name: release
 
+# One tag → one release containing:
+#   CLI      stzo-agent-x.y.z.tgz + cli-latest.json (npm-style OTA used by the `stzo` command)
+#   Desktop  dmg (Apple Silicon / Intel) + Windows setup.exe, plus signed updater bundles and
+#            latest.json (Tauri updater manifest)
+# The release stays a draft until every asset is uploaded, so clients never see half a release.
+
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)build, e.g. v0.1.0"
+        description: "Existing tag to (re)build, e.g. v0.2.0"
         required: true
 
 permissions:
   contents: write
 
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
 jobs:
-  release:
+  cli:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ env.TAG }}
 
       - uses: actions/setup-node@v4
         with:
@@ -28,12 +39,10 @@ jobs:
       - name: Resolve version
         id: v
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           PKG_VERSION="$(node -p 'require("./package.json").version')"
           if [ "v$PKG_VERSION" != "$TAG" ]; then
             echo "::error::tag $TAG does not match package.json version $PKG_VERSION"; exit 1
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
 
       - run: npm ci
@@ -41,7 +50,6 @@ jobs:
       - run: node --check server/server.mjs && bash -n server/public/install.sh
 
       - name: Pack
-        id: pack
         run: |
           mkdir -p out
           npm pack --pack-destination out
@@ -51,26 +59,161 @@ jobs:
           node -e '
             const [version, tag, tarball, sha256] = process.argv.slice(1);
             const m = { version, tag, tarball, sha256, node: ">=22.19.0", published_at: new Date().toISOString() };
-            require("fs").writeFileSync("out/latest.json", JSON.stringify(m, null, 2) + "\n");
-          ' "${{ steps.v.outputs.version }}" "${{ steps.v.outputs.tag }}" "$TARBALL" "$SHA"
+            require("fs").writeFileSync("out/cli-latest.json", JSON.stringify(m, null, 2) + "\n");
+          ' "${{ steps.v.outputs.version }}" "$TAG" "$TARBALL" "$SHA"
           cp server/public/install.sh server/public/install.ps1 out/
-          (cd out && sha256sum * > SHA256SUMS)
-          cat out/latest.json
+          cat out/cli-latest.json
 
       - name: Smoke test installed package
         run: |
           npm install -g ./out/stzo-agent-${{ steps.v.outputs.version }}.tgz
           STZO_HOME="$RUNNER_TEMP/stzo-home" stzo --version
-          STZO_HOME="$RUNNER_TEMP/stzo-home" stzo help | head -3
+          STZO_HOME="$RUNNER_TEMP/stzo-home" stzo desktop-api version
 
-      - name: Publish GitHub release
+      - name: Create draft release with CLI assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ steps.v.outputs.tag }}"
           NOTES="$(node scripts/changelog-section.mjs "${{ steps.v.outputs.version }}")"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" out/* --clobber
           else
-            gh release create "$TAG" out/* --title "STZO Agent $TAG" --notes "$NOTES"
+            gh release create "$TAG" out/* --draft --title "STZO Agent $TAG" --notes "$NOTES"
           fi
+
+  desktop:
+    needs: cli
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            platform: darwin-aarch64
+            label: mac-arm64
+            bundles: app,dmg
+          - os: macos-14
+            target: x86_64-apple-darwin
+            platform: darwin-x86_64
+            label: mac-x64
+            bundles: app,dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            label: win-x64
+            bundles: nsis
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.cli.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+          key: ${{ matrix.target }}
+
+      - run: npm ci
+      - run: npm ci
+        working-directory: desktop
+
+      - name: Bundle Node runtime + CLI
+        run: node desktop/scripts/prepare-sidecar.mjs --target ${{ matrix.target }}
+
+      - name: Build app
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          for i in 1 2 3; do
+            # hdiutil occasionally reports "resource busy" while building the dmg; retry.
+            npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} && break
+            [ "$i" = 3 ] && exit 1
+            hdiutil info 2>/dev/null | awk '/\/dev\/disk/ && /rw\./ {print $1}' | xargs -r -n1 hdiutil detach -force || true
+            sleep 5
+          done
+
+      - name: Collect artifacts
+        run: |
+          B="desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+          mkdir -p dist-desktop
+          BASE="https://github.com/${{ github.repository }}/releases/download/$TAG"
+          if [[ "${{ matrix.target }}" == *apple* ]]; then
+            ARCH="$([[ "${{ matrix.target }}" == aarch64* ]] && echo arm64 || echo x64)"
+            cp "$B"/dmg/*.dmg "dist-desktop/STZO-Agent-$VERSION-mac-$ARCH.dmg"
+            UPD="STZO-Agent-$VERSION-mac-$ARCH.app.tar.gz"
+            cp "$B"/macos/*.app.tar.gz "dist-desktop/$UPD"
+            SIG="$(cat "$B"/macos/*.app.tar.gz.sig)"
+          else
+            UPD="STZO-Agent-$VERSION-windows-x64-setup.exe"
+            cp "$B"/nsis/*-setup.exe "dist-desktop/$UPD"
+            SIG="$(cat "$B"/nsis/*-setup.exe.sig)"
+          fi
+          node -e '
+            const [platform, url, signature] = process.argv.slice(1);
+            require("fs").writeFileSync("dist-desktop/platform-" + platform + ".json", JSON.stringify({ platform, url, signature }));
+          ' "${{ matrix.platform }}" "$BASE/$UPD" "$SIG"
+          ls -la dist-desktop
+
+      - name: Upload installers to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist-desktop/STZO-Agent-* --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: updater-${{ matrix.label }}
+          path: dist-desktop/platform-*.json
+
+  publish:
+    needs: [cli, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: updater-*
+          merge-multiple: true
+          path: fragments
+      - name: Write updater manifest and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.cli.outputs.version }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const [version, notes] = process.argv.slice(1);
+            const platforms = {};
+            for (const f of fs.readdirSync("fragments")) {
+              const p = JSON.parse(fs.readFileSync("fragments/" + f, "utf8"));
+              platforms[p.platform] = { url: p.url, signature: p.signature };
+            }
+            const m = { version, notes, pub_date: new Date().toISOString(), platforms };
+            fs.writeFileSync("latest.json", JSON.stringify(m, null, 2) + "\n");
+          ' "$VERSION" "$(node scripts/changelog-section.mjs "$VERSION" | head -c 4000)"
+          cat latest.json
+          gh release download "$TAG" --dir sums --pattern '*' --skip-existing || true
+          cp latest.json sums/
+          (cd sums && sha256sum * > SHA256SUMS)
+          gh release upload "$TAG" latest.json sums/SHA256SUMS --clobber
+          gh release edit "$TAG" --draft=false --latest

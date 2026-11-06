@@ -1,12 +1,12 @@
 import { copyFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import {
 	BridgeError,
 	fmtMoney,
 	getShop,
 	loadAccount,
 	logout,
+	openUrl,
 	redeem,
 	refreshMe,
 	startDeviceLogin,
@@ -14,43 +14,13 @@ import {
 	waitForDeviceApproval,
 } from "./account.ts";
 import { AGENT_DIR, BRAND, CACHE_DIR, HOME, PACKAGE_ROOT, VERSION, ensureDir, loadState, patchState, writeJson } from "./brand.ts";
-import accountExtension, { openUrl } from "./extensions/account.ts";
-import brandingExtension from "./extensions/branding.ts";
-import updaterExtension from "./extensions/updater.ts";
-import confirmDestructive from "./plugins/confirm-destructive/index.ts";
-import gitCheckpoint from "./plugins/git-checkpoint/index.ts";
-import handoff from "./plugins/handoff/index.ts";
-import notify from "./plugins/notify/index.ts";
-import planMode from "./plugins/plan-mode/index.ts";
-import protectedPaths from "./plugins/protected-paths/index.ts";
-import question from "./plugins/question/index.ts";
-import sessionName from "./plugins/session-name/index.ts";
-import subagent from "./plugins/subagent/index.ts";
-import todo from "./plugins/todo/index.ts";
+import { desktopApi } from "./desktop-api.ts";
+import { PLUGIN_INFO } from "./plugin-info.ts";
 import { fetchLatestRelease, installRelease, isNewer } from "./updater.ts";
 
-/** Bundled plugins. Users toggle them with `stzo config` or `-builtin:<name>` in settings.json. */
-const PLUGINS: InlineExtension[] = [
-	{ name: "plan-mode", factory: planMode, builtin: true },
-	{ name: "todo", factory: todo, builtin: true },
-	{ name: "subagent", factory: subagent, builtin: true },
-	{ name: "question", factory: question, builtin: true },
-	{ name: "handoff", factory: handoff, builtin: true },
-	{ name: "session-name", factory: sessionName, builtin: true },
-	{ name: "confirm-destructive", factory: confirmDestructive, builtin: true },
-	{ name: "protected-paths", factory: protectedPaths, builtin: true },
-	{ name: "notify", factory: notify, builtin: true },
-	{ name: "git-checkpoint", factory: gitCheckpoint, builtin: true },
-];
-const DISABLED_BY_DEFAULT = ["git-checkpoint"];
+const DISABLED_BY_DEFAULT = PLUGIN_INFO.filter((p) => !p.defaultEnabled).map((p) => p.name);
 
-const CORE: InlineExtension[] = [
-	{ name: "stzo-account", factory: accountExtension, hidden: true },
-	{ name: "stzo-updater", factory: updaterExtension, hidden: true },
-	{ name: "stzo-branding", factory: brandingExtension, hidden: true },
-];
-
-function configureEnvironment() {
+export function configureEnvironment() {
 	process.env.PI_CODING_AGENT_DIR ||= AGENT_DIR;
 	// Pi's own update check targets pi.dev; we ship our own OTA channel.
 	process.env.PI_SKIP_VERSION_CHECK = "1";
@@ -67,6 +37,11 @@ function copyMissing(srcDir: string, dstDir: string) {
 	}
 }
 
+function hasGitBash() {
+	const roots = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Programs")];
+	return roots.some((r) => r && existsSync(join(r, "Git", "bin", "bash.exe")));
+}
+
 /** First run (and after each upgrade): default settings plus bundled sub-agents and prompts. */
 function seed() {
 	ensureDir(HOME);
@@ -74,11 +49,14 @@ function seed() {
 	ensureDir(CACHE_DIR);
 	const settingsFile = join(AGENT_DIR, "settings.json");
 	if (!existsSync(settingsFile)) {
-		writeJson(settingsFile, {
+		const settings: Record<string, unknown> = {
 			extensions: DISABLED_BY_DEFAULT.map((n) => `-builtin:${n}`),
 			quietStartup: "header",
 			collapseChangelog: true,
-		});
+		};
+		// Windows without Git Bash: give the model PowerShell so it can still run commands.
+		if (process.platform === "win32" && !hasGitBash()) settings.defaultTools = ["+powershell"];
+		writeJson(settingsFile, settings);
 	}
 	const state = loadState();
 	if (state.seededVersion !== VERSION) {
@@ -186,6 +164,7 @@ export async function run(argv: string[]) {
 		version: () => out(VERSION),
 		"--version": () => out(VERSION),
 		"-v": () => out(VERSION),
+		"desktop-api": () => desktopApi(rest),
 		help: cmdHelp,
 		"--help": cmdHelp,
 		"-h": cmdHelp,
@@ -200,7 +179,7 @@ export async function run(argv: string[]) {
 		return;
 	}
 	const args = argv.map((a) => (a === "--help-pi" ? "--help" : a));
-	const { main } = await import("@earendil-works/pi-coding-agent");
+	const [{ main }, { CORE, PLUGINS }] = await Promise.all([import("@earendil-works/pi-coding-agent"), import("./launch.ts")]);
 	process.title = BRAND.command;
 	await main(args, { extensionFactories: [...CORE, ...PLUGINS] });
 }

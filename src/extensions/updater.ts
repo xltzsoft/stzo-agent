@@ -51,6 +51,7 @@ export default function updaterExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_e, ctx) => {
+		if (process.env.STZO_DESKTOP === "1") return; // the desktop app updates itself
 		// Remote announcement / forced minimum version.
 		void getConfig()
 			.then((c) => {

@@ -34,9 +34,13 @@
 <body>
 <main>
   <h1>STZO <span>Agent</span></h1>
-  <p class="lead">终端里的 AI 编程助手。登录即用 Claude 等模型，按量计费，余额不足时在终端里直接充值。 <span id="ver"></span></p>
+  <p class="lead">AI 编程助手，桌面应用和命令行两种用法。登录即用 Claude 等模型，按量计费，余额不足时直接在应用里充值。 <span id="ver"></span></p>
 
-  <h2>1. 安装</h2>
+  <h2>桌面应用</h2>
+  <p id="desk">下载安装包后即可使用，无需 Node.js：<a href="https://github.com/xltzsoft/stzo-agent/releases/latest">GitHub Releases</a></p>
+  <p style="color:var(--muted);font-size:14px">macOS 首次打开请在访达里右键应用 →「打开」；Windows 出现 SmartScreen 时点「更多信息 → 仍要运行」。</p>
+
+  <h2>1. 命令行安装</h2>
   <div class="tabs"><button class="on" data-t="unix">macOS / Linux</button><button data-t="win">Windows</button></div>
   <pre id="unix">curl -fsSL https://gc.stzo.cn/agent/install.sh | bash</pre>
   <pre id="win" hidden>irm https://gc.stzo.cn/agent/install.ps1 | iex</pre>
@@ -84,7 +88,17 @@ stzo</pre>
     document.getElementById("win").hidden = b.dataset.t !== "win";
   };
   if (/Windows/.test(navigator.userAgent)) document.querySelector('[data-t="win"]').click();
-  fetch("./api/update/latest").then((r) => r.json()).then((j) => { if (j.ok) document.getElementById("ver").textContent = "最新版本 v" + j.data.version; }).catch(() => {});
+  fetch("./api/update/latest").then((r) => r.json()).then((j) => {
+    if (!j.ok) return;
+    document.getElementById("ver").textContent = "最新版本 v" + j.data.version;
+    const kinds = [[/-mac-arm64\.dmg$/, "macOS（Apple 芯片）"], [/-mac-x64\.dmg$/, "macOS（Intel）"], [/-windows-x64-setup\.exe$/, "Windows"]];
+    const links = [];
+    for (const [re, label] of kinds) {
+      const a = (j.data.assets || []).find((x) => re.test(x.name));
+      if (a) links.push('<a href="' + (a.mirror_url || a.github_url) + '">' + label + "</a>");
+    }
+    if (links.length) document.getElementById("desk").innerHTML = "下载：" + links.join("　") + '　<a href="https://github.com/xltzsoft/stzo-agent/releases/latest" style="color:var(--muted)">全部版本</a>';
+  }).catch(() => {});
 </script>
 </body>
 </html>

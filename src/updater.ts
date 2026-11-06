@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, openSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, openSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { BRAND, HOME, PACKAGE_ROOT, VERSION, bridgeUrl, compareVersions, ensureDir, loadState, patchState } from "./brand.ts";
@@ -35,9 +35,16 @@ export async function fetchLatestRelease(): Promise<ReleaseInfo> {
 	} catch {}
 	const rel = await getJson(`https://api.github.com/repos/${BRAND.repo}/releases/latest`, 12000);
 	const assets = (rel.assets || []).map((a: any) => ({ name: a.name, github_url: a.browser_download_url, size: a.size }));
+	// cli-latest.json since v0.2 (latest.json now belongs to the desktop app's updater).
 	let manifest: any = {};
-	const m = assets.find((a: any) => a.name === "latest.json");
-	if (m) manifest = await getJson(m.github_url, 12000).catch(() => ({}));
+	for (const name of ["cli-latest.json", "latest.json"]) {
+		const m = assets.find((a: any) => a.name === name);
+		const j = m ? await getJson(m.github_url, 12000).catch(() => ({})) : {};
+		if (j?.tarball) {
+			manifest = j;
+			break;
+		}
+	}
 	return {
 		version: String(manifest.version || rel.tag_name || "").replace(/^v/, ""),
 		tag: rel.tag_name,
@@ -141,11 +148,17 @@ export async function installRelease(rel: ReleaseInfo, onProgress?: (msg: string
 	if (!isNewer(rel)) return { status: "current" };
 	const prefix = installPrefix();
 	if (!prefix) return { status: "skipped", reason: "当前为源码/开发模式运行，请用 git pull 更新" };
+	try {
+		accessSync(PACKAGE_ROOT, constants.W_OK);
+		accessSync(dirname(PACKAGE_ROOT), constants.W_OK);
+	} catch {
+		return { status: "failed", reason: `安装目录无写权限（可能用 sudo 安装过）。请重新运行安装脚本：curl -fsSL ${BRAND.server}/agent/install.sh | bash` };
+	}
 	if (loadState().installedVersion === rel.version) return { status: "updated", version: rel.version };
 	const tarballName = rel.tarball || `${BRAND.npmPackage}-${rel.version}.tgz`;
 	const asset = rel.assets.find((a) => a.name === tarballName);
 	if (!asset) return { status: "failed", reason: `发布中缺少 ${tarballName}` };
-	if (!rel.sha256) return { status: "failed", reason: "发布缺少 SHA256 校验信息 (latest.json)" };
+	if (!rel.sha256) return { status: "failed", reason: "发布缺少 SHA256 校验信息 (cli-latest.json)" };
 	const release = acquireLock();
 	if (!release) return { status: "skipped", reason: "另一个进程正在更新" };
 	let file: string | undefined;

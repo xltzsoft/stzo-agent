@@ -179,7 +179,9 @@ export function pickDefaultModel(account: Account, preferred?: string): { provid
 		Boolean,
 	) as string[];
 	const all: { provider: string; id: string }[] = [];
-	for (const k of account.keys) {
+	// Cheapest group first, so a new user's default never lands on a premium multiplier.
+	const keys = [...account.keys].sort((a, b) => (a.rate_multiplier ?? 1) - (b.rate_multiplier ?? 1));
+	for (const k of keys) {
 		for (const id of cachedModelIds(k) ?? defaultIds(k)) all.push({ provider: providerId(k), id });
 	}
 	for (const p of prefs) {

@@ -13,6 +13,10 @@ HOME_DIR="${STZO_HOME:-$HOME/.stzo-agent}"
 say() { printf '\033[1;33m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m错误：\033[0m%s\n' "$*" >&2; exit 1; }
 
+if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
+  die "请不要用 sudo 运行安装脚本。直接执行：curl -fsSL $SERVER/agent/install.sh | bash"
+fi
+
 command -v node >/dev/null 2>&1 || die "未找到 Node.js。请先安装 Node.js 22.19 或更高版本：https://nodejs.org/ （macOS 可用 brew install node）"
 command -v npm  >/dev/null 2>&1 || die "未找到 npm，请重新安装 Node.js"
 node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=19)?0:1)' \
@@ -46,9 +50,10 @@ async function main() {
     if (a) urls = [a.mirror_url, a.github_url].filter(Boolean);
   } else {
     const assets = j.assets || [];
-    const m = assets.find((x) => x.name === "latest.json");
+    const m = assets.find((x) => x.name === "cli-latest.json") || assets.find((x) => x.name === "latest.json");
     let man = {};
     if (m) man = await (await fetch(m.browser_download_url)).json().catch(() => ({}));
+    if (!man.tarball) man = {};
     version = String(man.version || j.tag_name || "").replace(/^v/, "");
     tarball = man.tarball || `stzo-agent-${version}.tgz`; sha = man.sha256 || "";
     const a = assets.find((x) => x.name === tarball);
@@ -76,17 +81,9 @@ if [ -n "$SHA" ]; then
   say "校验通过"
 fi
 
-# npm prefix: honor STZO_PREFIX, else the global prefix if writable, else a private prefix.
-PREFIX="${STZO_PREFIX:-}"
-if [ -z "$PREFIX" ]; then
-  GP="$(npm prefix -g 2>/dev/null || true)"
-  if [ -n "$GP" ] && { [ -w "$GP/lib/node_modules" ] || { [ ! -e "$GP/lib/node_modules" ] && [ -w "$GP" ]; }; }; then
-    PREFIX="$GP"
-  else
-    PREFIX="$HOME_DIR/npm-global"
-  fi
-fi
-mkdir -p "$PREFIX"
+# Always install into a private prefix the user owns: no sudo, no global npm permissions.
+PREFIX="${STZO_PREFIX:-$HOME_DIR/cli}"
+mkdir -p "$PREFIX" "$HOME_DIR/npm-cache"
 
 REG_ARGS=()
 if [ -n "${STZO_NPM_REGISTRY:-}" ]; then
@@ -97,21 +94,40 @@ elif ! curl -fsS --max-time 4 -o /dev/null https://registry.npmjs.org/ 2>/dev/nu
 fi
 
 say "安装到 $PREFIX …"
-npm install -g --prefix "$PREFIX" --no-audit --no-fund --loglevel=error ${REG_ARGS[@]+"${REG_ARGS[@]}"} "$TMP/$TARBALL"
+npm install -g --prefix "$PREFIX" --cache "$HOME_DIR/npm-cache" --no-audit --no-fund --loglevel=error \
+  ${REG_ARGS[@]+"${REG_ARGS[@]}"} "$TMP/$TARBALL"
 
+# Put `stzo` on PATH: link into a writable directory that is already on PATH.
 BIN="$PREFIX/bin"
-case ":$PATH:" in
-  *":$BIN:"*) ;;
-  *)
-    case "${SHELL##*/}" in
-      zsh)  RC="$HOME/.zshrc" ;;
-      bash) RC="$HOME/.bashrc"; [ "$(uname)" = Darwin ] && RC="$HOME/.bash_profile" ;;
-      *)    RC="$HOME/.profile" ;;
-    esac
-    grep -qs "stzo-agent PATH" "$RC" || printf '\n# stzo-agent PATH\nexport PATH="%s:$PATH"\n' "$BIN" >> "$RC"
-    say "已把 $BIN 加入 PATH（新开终端生效，或执行：export PATH=\"$BIN:\$PATH\"）"
-    ;;
-esac
+LINKED=
+for D in "$HOME/.local/bin" "$HOME/bin" /opt/homebrew/bin /usr/local/bin; do
+  case ":$PATH:" in *":$D:"*) ;; *) continue ;; esac
+  [ -d "$D" ] && [ -w "$D" ] || continue
+  for N in stzo stzo-agent; do ln -sf "$BIN/$N" "$D/$N"; done
+  LINKED="$D"; break
+done
+
+if [ -z "$LINKED" ]; then
+  mkdir -p "$HOME/.local/bin"
+  for N in stzo stzo-agent; do ln -sf "$BIN/$N" "$HOME/.local/bin/$N"; done
+  case "${SHELL##*/}" in
+    zsh)  RC="$HOME/.zshrc" ;;
+    bash) RC="$HOME/.bashrc"; [ "$(uname)" = Darwin ] && RC="$HOME/.bash_profile" ;;
+    *)    RC="$HOME/.profile" ;;
+  esac
+  LINE='export PATH="$HOME/.local/bin:$PATH"'
+  if grep -qs '.local/bin' "$RC"; then
+    :
+  elif { [ -e "$RC" ] && [ -w "$RC" ]; } || { [ ! -e "$RC" ] && [ -w "$HOME" ]; }; then
+    printf '\n# stzo-agent PATH\n%s\n' "$LINE" >> "$RC"
+    say "已把 ~/.local/bin 加入 $RC（新开终端生效）"
+  else
+    printf '\033[1;33m注意：\033[0m%s 不可写，请手动把下面这行加入你的 shell 配置：\n  %s\n' "$RC" "$LINE"
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
+else
+  say "已链接 stzo 到 $LINKED"
+fi
 
 printf '\n\033[1;32m✓ STZO Agent v%s 安装完成\033[0m\n' "$VERSION"
 echo "  1. 登录：  stzo login"

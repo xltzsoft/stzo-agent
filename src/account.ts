@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { hostname, platform, arch } from "node:os";
 import { ACCOUNT_FILE, BRAND, VERSION, bridgeUrl, loadState, patchState, readJson, writeJson } from "./brand.ts";
@@ -229,3 +230,21 @@ function sleep(ms: number, signal?: AbortSignal) {
 
 export const fmtMoney = (v: number | undefined) => (typeof v === "number" ? `$${v.toFixed(2)}` : "-");
 export const userLabel = (u: RelayUser) => u.email || u.username || `#${u.id}`;
+
+export function openUrl(url: string): boolean {
+	if (process.env.SSH_CONNECTION || process.env.SSH_TTY) return false;
+	try {
+		const [cmd, args] =
+			process.platform === "darwin"
+				? ["open", [url]]
+				: process.platform === "win32"
+					? ["cmd", ["/c", "start", "", url.replace(/&/g, "^&")]]
+					: ["xdg-open", [url]];
+		const child = spawn(cmd as string, args as string[], { stdio: "ignore", detached: true, windowsHide: true });
+		child.on("error", () => {});
+		child.unref();
+		return true;
+	} catch {
+		return false;
+	}
+}

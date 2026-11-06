@@ -20,8 +20,9 @@ try {
   if ($a) { $urls = @($a.mirror_url, $a.github_url) | Where-Object { $_ } }
 } catch {
   $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 20
-  $m = $rel.assets | Where-Object { $_.name -eq "latest.json" } | Select-Object -First 1
+  $m = $rel.assets | Where-Object { $_.name -eq "cli-latest.json" } | Select-Object -First 1
   $man = if ($m) { Invoke-RestMethod -Uri $m.browser_download_url } else { @{} }
+  if (-not $man.tarball) { $man = @{} }
   $version = if ($man.version) { $man.version } else { $rel.tag_name.TrimStart("v") }
   $tarball = if ($man.tarball) { $man.tarball } else { "stzo-agent-$version.tgz" }; $sha = $man.sha256
   $a = $rel.assets | Where-Object { $_.name -eq $tarball } | Select-Object -First 1

@@ -1,0 +1,38 @@
+{
+	"name": "stzo-agent-desktop",
+	"private": true,
+	"version": "0.2.0",
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"build": "tsc --noEmit && vite build",
+		"tauri": "tauri",
+		"prepare-sidecar": "node scripts/prepare-sidecar.mjs",
+		"app:dev": "tauri dev",
+		"app:build": "node scripts/prepare-sidecar.mjs && tauri build",
+		"dev:web": "node scripts/dev-web.mjs"
+	},
+	"dependencies": {
+		"@fontsource/bricolage-grotesque": "5.3.0",
+		"@fontsource/ibm-plex-mono": "5.3.0",
+		"@fontsource/ibm-plex-sans": "5.3.0",
+		"@tauri-apps/api": "2.12.4",
+		"@tauri-apps/plugin-dialog": "2.8.4",
+		"@tauri-apps/plugin-opener": "2.7.2",
+		"@tauri-apps/plugin-process": "2.4.0",
+		"@tauri-apps/plugin-updater": "2.14.1",
+		"react": "19.3.1",
+		"react-dom": "19.3.1",
+		"react-markdown": "10.1.0",
+		"rehype-highlight": "7.0.2",
+		"remark-gfm": "4.0.1"
+	},
+	"devDependencies": {
+		"@tauri-apps/cli": "2.12.4",
+		"@types/react": "^19.0.0",
+		"@types/react-dom": "^19.0.0",
+		"@vitejs/plugin-react": "6.2.1",
+		"typescript": "^5.9.0",
+		"vite": "8.3.6"
+	}
+}

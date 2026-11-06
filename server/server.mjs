@@ -430,6 +430,19 @@ function clientConfig() {
 // ---------------------------------------------------------------------------
 
 let releaseCache = { at: 0, data: null };
+
+function compareSemver(a, b) {
+	const pa = a.split(/[.-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+	const pb = b.split(/[.-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+	for (let i = 0; i < 3; i++) {
+		const d = (Number(pa[i]) || 0) - (Number(pb[i]) || 0);
+		if (d) return d;
+	}
+	// A release (no pre-release tag) is newer than any pre-release of the same version.
+	const ra = pa.length > 3;
+	const rb = pb.length > 3;
+	return ra === rb ? 0 : ra ? -1 : 1;
+}
 const SAFE_ASSET = /^[A-Za-z0-9._-]{1,120}$/;
 
 async function gh(path) {
@@ -444,14 +457,21 @@ async function getLatestRelease() {
 	if (releaseCache.data && Date.now() - releaseCache.at < 10 * 60_000) return releaseCache.data;
 	const rel = await gh(`/repos/${cfg.githubRepo}/releases/latest`);
 	const assets = (rel.assets || []).filter((a) => SAFE_ASSET.test(a.name));
+	// CLI manifest: cli-latest.json (v0.2+). Older releases used latest.json, which is now the
+	// desktop (Tauri updater) manifest, so only accept it when it carries a CLI tarball.
 	let manifest = null;
-	const manifestAsset = assets.find((a) => a.name === "latest.json");
-	if (manifestAsset) {
+	for (const name of ["cli-latest.json", "latest.json"]) {
+		const asset = assets.find((a) => a.name === name);
+		if (!asset) continue;
 		try {
-			const res = await fetch(manifestAsset.browser_download_url, { signal: AbortSignal.timeout(15000) });
-			if (res.ok) manifest = await res.json();
+			const res = await fetch(asset.browser_download_url, { signal: AbortSignal.timeout(15000) });
+			const json = res.ok ? await res.json() : null;
+			if (json?.tarball) {
+				manifest = json;
+				break;
+			}
 		} catch (err) {
-			log("ota: manifest fetch failed:", err.message);
+			log(`ota: ${name} fetch failed:`, err.message);
 		}
 	}
 	const version = String(manifest?.version || rel.tag_name || "").replace(/^v/, "");
@@ -473,6 +493,26 @@ async function getLatestRelease() {
 	};
 	releaseCache = { at: Date.now(), data };
 	return data;
+}
+
+// Desktop app (Tauri updater). The release's latest.json lists per-platform bundles; we rewrite
+// their URLs to this mirror so updates download fast in mainland China.
+let desktopCache = { at: 0, data: null };
+async function getDesktopManifest() {
+	if (desktopCache.data && Date.now() - desktopCache.at < 10 * 60_000) return desktopCache.data;
+	const rel = await gh(`/repos/${cfg.githubRepo}/releases/latest`);
+	const asset = (rel.assets || []).find((a) => a.name === "latest.json");
+	if (!asset) return null;
+	const res = await fetch(asset.browser_download_url, { signal: AbortSignal.timeout(15000) });
+	if (!res.ok) throw new Error(`manifest ${res.status}`);
+	const json = await res.json();
+	if (!json?.platforms) return null;
+	for (const entry of Object.values(json.platforms)) {
+		const name = String(entry.url || "").split("/").pop();
+		if (SAFE_ASSET.test(name)) entry.url = `${cfg.publicBase}${cfg.mount}/dl/${rel.tag_name}/${name}`;
+	}
+	desktopCache = { at: Date.now(), data: json };
+	return json;
 }
 
 const inflightDownloads = new Map();
@@ -724,6 +764,26 @@ async function route(req, res) {
 			return ok(res, await getLatestRelease());
 		} catch (err) {
 			log("ota:", err.message);
+			return fail(res, 502, "暂时无法获取最新版本");
+		}
+	}
+
+	// Tauri updater endpoint: /api/update/desktop/{target}/{arch}/{current_version}
+	if (m === "GET" && path.startsWith("/api/update/desktop/")) {
+		const [target, arch, current] = path.slice("/api/update/desktop/".length).split("/").map((x) => decodeURIComponent(x || ""));
+		try {
+			const man = await getDesktopManifest();
+			const entry = man?.platforms?.[`${target}-${arch}`];
+			const newer = man && entry && compareSemver(String(man.version).replace(/^v/, ""), String(current).replace(/^v/, "")) > 0;
+			if (!newer) {
+				res.writeHead(204, { "Cache-Control": "no-store" });
+				return res.end();
+			}
+			res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+			return res.end(JSON.stringify({ version: man.version, notes: man.notes || "", pub_date: man.pub_date, url: entry.url, signature: entry.signature }));
+		} catch (err) {
+			log("ota desktop:", err.message);
+			// Let the client fall through to its GitHub endpoint.
 			return fail(res, 502, "暂时无法获取最新版本");
 		}
 	}

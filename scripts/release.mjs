@@ -35,6 +35,16 @@ try {
 	writeFileSync(lockUrl, `${JSON.stringify(lock, null, "\t")}\n`);
 } catch {}
 
+// Desktop app versions follow the CLI (tauri.conf.json reads ../../package.json directly).
+const deskPkgUrl = new URL("../desktop/package.json", import.meta.url);
+try {
+	const dp = JSON.parse(readFileSync(deskPkgUrl, "utf8"));
+	dp.version = next;
+	writeFileSync(deskPkgUrl, `${JSON.stringify(dp, null, "\t")}\n`);
+	const cargoUrl = new URL("../desktop/src-tauri/Cargo.toml", import.meta.url);
+	writeFileSync(cargoUrl, readFileSync(cargoUrl, "utf8").replace(/^version = ".*"$/m, `version = "${next}"`));
+} catch {}
+
 const clUrl = new URL("../CHANGELOG.md", import.meta.url);
 let cl = "";
 try {
@@ -46,8 +56,8 @@ const header = "# Changelog\n";
 cl = cl.startsWith(header) ? cl.slice(header.length) : cl;
 writeFileSync(clUrl, `${header}\n## v${next} (${date})\n\n${body}\n${cl.replace(/^\n+/, "\n")}`);
 
-sh("git", ["add", "package.json", "package-lock.json", "CHANGELOG.md"]);
+sh("git", ["add", "package.json", "package-lock.json", "CHANGELOG.md", "desktop/package.json", "desktop/src-tauri/Cargo.toml"]);
 sh("git", ["commit", "-m", `release: v${next}`]);
 sh("git", ["tag", "-a", `v${next}`, "-m", `v${next}`]);
 sh("git", ["push", "origin", "HEAD", `v${next}`]);
-console.log(`\n已推送 v${next}，GitHub Actions 正在构建发布。客户端会在 6 小时内自动更新（或执行 stzo update）。`);
+console.log(`\n已推送 v${next}，GitHub Actions 正在构建发布。命令行与桌面版客户端会在 6 小时内自动更新。`);
