@@ -5,8 +5,28 @@ import { Markdown } from "./Markdown";
 
 const rel = (p: unknown, cwd: string) => {
 	const s = String(p ?? "");
-	return cwd && s.startsWith(`${cwd}/`) ? s.slice(cwd.length + 1) : s;
+	if (!cwd) return s;
+	// Windows paths may use either separator and differ in case.
+	const norm = (x: string) => x.replace(/\\/g, "/");
+	const win = /^[a-z]:[\\/]/i.test(cwd);
+	const base = norm(cwd).replace(/\/$/, "") + "/";
+	const path = norm(s);
+	const hit = win ? path.toLowerCase().startsWith(base.toLowerCase()) : path.startsWith(base);
+	return hit ? path.slice(base.length) : s;
 };
+
+// One stable ToolRun per historical toolResult message, so memoized messages don't re-render on
+// every streamed frame just because the lookup table was rebuilt.
+const historyRuns = new WeakMap<ChatMessage, ToolRun>();
+const historyRun = (m: ChatMessage): ToolRun => {
+	let run = historyRuns.get(m);
+	if (!run) {
+		run = { running: false, result: { content: m.content as Block[], details: m.details }, isError: m.isError };
+		historyRuns.set(m, run);
+	}
+	return run;
+};
+const toolCallIds = (m: ChatMessage) => (Array.isArray(m.content) ? m.content.filter((b: any) => b.type === "toolCall").map((b: any) => b.id as string) : []);
 const firstLine = (s: string) => {
 	const l = s.split("\n")[0];
 	return s.includes("\n") ? `${l} …` : l;
@@ -241,7 +261,13 @@ const AssistantMessage = memo(function AssistantMessage({
 			{msg.stopReason === "aborted" && <div className="muted-note">已停止</div>}
 		</div>
 	);
-});
+},
+(a, b) =>
+	a.msg === b.msg &&
+	a.cwd === b.cwd &&
+	a.live === b.live &&
+	a.onAction === b.onAction &&
+	toolCallIds(b.msg).every((id) => a.tools[id] === b.tools[id]));
 
 function UserMessage({ msg }: { msg: ChatMessage }) {
 	const images = Array.isArray(msg.content) ? (msg.content.filter((b) => b.type === "image") as Extract<Block, { type: "image" }>[]) : [];
@@ -275,7 +301,7 @@ export function Thread({
 		const map: Record<string, ToolRun> = {};
 		for (const m of messages) {
 			if (m.role === "toolResult" && m.toolCallId) {
-				map[m.toolCallId] = { running: false, result: { content: m.content as Block[], details: m.details }, isError: m.isError };
+				map[m.toolCallId] = historyRun(m);
 			}
 		}
 		return { ...map, ...tools };

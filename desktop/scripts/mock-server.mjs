@@ -77,6 +77,12 @@ function script(messages) {
 	const last = messages[messages.length - 1];
 	const prompt = typeof last.content === "string" ? last.content : (last.content.find((b) => b.type === "text")?.text ?? "");
 	if (/余额|balance/.test(prompt) && turns === 0) return { error: 402 };
+	if (/长文|long/i.test(prompt) && turns === 0) {
+		const paras = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 段：这是一段用于测试滚动的较长回复内容，包含足够多的文字来撑开页面高度。`);
+		const longLine = "const x = " + "'0123456789abcdef'.repeat(4) + ".repeat(12) + "'';";
+		const text = [...paras.slice(0, 20), "```js", longLine, "```", "https://example.com/" + "a".repeat(240), ...paras.slice(20)].join("\n\n");
+		return { blocks: [{ type: "thinking", text: "用户想看一段很长的回复。" }, { type: "text", text }], stop: "end_turn" };
+	}
 	if (/上游|upstream/i.test(prompt) && turns === 0) {
 		flaky = (flaky + 1) % 3;
 		// Like Sub2API when the upstream never sends its terminal event: text streams, then an error.

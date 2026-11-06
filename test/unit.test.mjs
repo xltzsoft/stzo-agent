@@ -29,3 +29,29 @@ test("pickDefaultModel prefers sonnet", () => {
 	assert.equal(pick.provider, "stzo-g999001");
 	assert.match(pick.id, /sonnet/);
 });
+
+test("relay stream: structured thinking content becomes reasoning_text + plain text", async () => {
+	const { normalizeSseLine, stripRequest } = await import("../dist/relay-fetch.js");
+	const line = `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: [{ type: "thinking", thinking: [{ type: "text", text: "think" }] }, { type: "text", text: "391" }] } }] })}`;
+	const out = JSON.parse(normalizeSseLine(line).slice(6));
+	assert.equal(out.choices[0].delta.content, "391");
+	assert.equal(out.choices[0].delta.reasoning_text, "think");
+	const plain = `data: {"choices":[{"delta":{"content":"hi"}}]}`;
+	assert.equal(normalizeSseLine(plain), plain);
+	assert.equal(normalizeSseLine("data: [DONE]"), "data: [DONE]");
+	const body = JSON.stringify({ messages: [{ role: "assistant", content: "391", reasoning_text: "think" }, { role: "user", content: "reasoning_text" }] });
+	const stripped = JSON.parse(stripRequest(body));
+	assert.equal("reasoning_text" in stripped.messages[0], false);
+	assert.equal(stripped.messages[1].content, "reasoning_text");
+});
+
+test("relay chat models use the system role; DeepSeek V4 has no medium effort", () => {
+	const key = { group_id: 2, group_name: "ALL", platform: "openai", api: "openai-completions", rate_multiplier: 1, key: "k", id: 1, base_url: "x" };
+	const ds = toModelConfig(key, "deepseek-v4.1-flash1");
+	assert.equal(ds.compat.supportsDeveloperRole, false);
+	assert.equal(ds.compat.supportsStore, false);
+	assert.equal(ds.thinkingLevelMap.medium, null);
+	const gpt = toModelConfig(key, "gpt-5");
+	assert.equal(gpt.compat.supportsDeveloperRole, false);
+	assert.notEqual(gpt.compat.supportsStore, false);
+});

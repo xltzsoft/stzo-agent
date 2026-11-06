@@ -3,6 +3,11 @@ import { api, displayName, money, type AccountState, type PluginState, type Shop
 import { openExternal, type UpdateInfo } from "../lib/native";
 import type { UiRequest } from "../lib/rpc";
 
+/** Enter that is not confirming an IME candidate (WebKit reports those as keyCode 229). */
+function enterKey(e: { key: string; nativeEvent: KeyboardEvent }) {
+	return e.key === "Enter" && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229;
+}
+
 export function Modal({ children, onClose, wide, label }: { children: ReactNode; onClose?: () => void; wide?: boolean; label: string }) {
 	useEffect(() => {
 		const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose?.();
@@ -168,7 +173,7 @@ export function RechargeDialog({ account, onRedeemed, onClose }: { account?: Acc
 					placeholder="付款后收到的兑换码"
 					value={code}
 					onChange={(e) => setCode(e.target.value)}
-					onKeyDown={(e) => e.key === "Enter" && void redeem()}
+					onKeyDown={(e) => enterKey(e) && void redeem()}
 					autoFocus
 				/>
 				<button className="btn primary" style={{ height: 38 }} onClick={() => void redeem()} disabled={busy || !code.trim()}>
@@ -228,11 +233,13 @@ export function SettingsDialog({
 	};
 
 	const toggle = async (p: PluginState) => {
+		const prev = plugins;
 		setPlugins(plugins?.map((x) => (x.name === p.name ? { ...x, enabled: !p.enabled } : x)));
 		try {
 			setPlugins(await api.setPlugin(p.name, !p.enabled));
 			setChanged(true);
 		} catch (e) {
+			setPlugins(prev);
 			setErr((e as Error).message);
 		}
 	};
@@ -386,7 +393,7 @@ export function UiRequestDialog({ req, onAnswer }: { req: UiRequest; onAnswer: (
 					placeholder={req.placeholder}
 					value={value}
 					onChange={(e) => setValue(e.target.value)}
-					onKeyDown={(e) => e.key === "Enter" && onAnswer({ value })}
+					onKeyDown={(e) => enterKey(e) && onAnswer({ value })}
 				/>
 			)}
 			{req.method === "editor" && <textarea className="input" autoFocus value={value} onChange={(e) => setValue(e.target.value)} />}

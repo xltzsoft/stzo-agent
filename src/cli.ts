@@ -16,6 +16,7 @@ import {
 import { AGENT_DIR, BRAND, CACHE_DIR, HOME, PACKAGE_ROOT, VERSION, ensureDir, loadState, patchState, writeJson } from "./brand.ts";
 import { desktopApi } from "./desktop-api.ts";
 import { PLUGIN_INFO } from "./plugin-info.ts";
+import { installRelayFetch } from "./relay-fetch.ts";
 import { fetchLatestRelease, installRelease, isNewer } from "./updater.ts";
 
 const DISABLED_BY_DEFAULT = PLUGIN_INFO.filter((p) => !p.defaultEnabled).map((p) => p.name);
@@ -144,6 +145,7 @@ function cmdHelp() {
 export async function run(argv: string[]) {
 	configureEnvironment();
 	seed();
+	installRelayFetch();
 	const [cmd, ...rest] = argv;
 	const handlers: Record<string, () => Promise<void> | void> = {
 		login: cmdLogin,

@@ -24,7 +24,8 @@
 					"x": 18,
 					"y": 22
 				},
-				"backgroundColor": "#EEF2F6"
+				"backgroundColor": "#EEF2F6",
+				"dragDropEnabled": false
 			}
 		],
 		"security": {

@@ -138,6 +138,9 @@ export class Agent {
 	private stderr: string[] = [];
 	private raf = 0;
 	private disposed = false;
+	/** Bumped on every agent event; lets snapshot requests detect that live events overtook them. */
+	private evSeq = 0;
+	private dialogTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	onSettled?: () => void;
 	onSessionChanged?: () => void;
 
@@ -191,23 +194,30 @@ export class Agent {
 		this.stderr = [];
 		this.set({ phase: "starting", exitInfo: undefined }, true);
 		try {
-			this.pid = await spawn(["--mode", "rpc"], this.state.cwd, (e) => {
+			const pid = await spawn(["--mode", "rpc"], this.state.cwd, (e) => {
+				if (this.disposed) return;
 				if (e.kind === "stdout") this.onLine(e.line);
 				else if (e.kind === "stderr") {
 					this.stderr.push(stripAnsi(e.line));
 					if (this.stderr.length > 40) this.stderr.shift();
 				} else this.onExit(e.code);
 			});
+			// Disposed while the process was still starting (project switch, restart, logout).
+			if (this.disposed) {
+				void kill(pid, 1500).catch(() => {});
+				return;
+			}
+			this.pid = pid;
 		} catch (err) {
-			this.set({ phase: "exited", exitInfo: String(err) }, true);
+			if (!this.disposed) this.set({ phase: "exited", exitInfo: String(err) }, true);
 			return;
 		}
 		try {
 			if (sessionPath) await this.request({ type: "switch_session", sessionPath });
 			await this.refresh();
-			this.set({ phase: "ready" }, true);
+			if (!this.disposed) this.set({ phase: "ready" }, true);
 		} catch (err) {
-			if (this.state.phase !== "exited") this.set({ phase: "exited", exitInfo: (err as Error).message }, true);
+			if (!this.disposed && this.state.phase !== "exited") this.set({ phase: "exited", exitInfo: (err as Error).message }, true);
 		}
 	}
 
@@ -222,6 +232,9 @@ export class Agent {
 
 	async dispose() {
 		this.disposed = true;
+		cancelAnimationFrame(this.raf);
+		for (const t of this.dialogTimers.values()) clearTimeout(t);
+		this.dialogTimers.clear();
 		if (this.pid !== undefined) await kill(this.pid, 1500).catch(() => {});
 		this.subs.clear();
 	}
@@ -258,6 +271,7 @@ export class Agent {
 
 	// ---- commands -------------------------------------------------------------------------
 	async refresh() {
+		const seq = this.evSeq;
 		const [st, msgs, models, levels, cmds] = await Promise.all([
 			this.request({ type: "get_state" }),
 			this.request({ type: "get_messages" }),
@@ -266,6 +280,9 @@ export class Agent {
 			this.request({ type: "get_commands" }).catch(() => ({ commands: [] })),
 		]);
 		const model = st.model && st.model.provider !== "unknown" ? st.model : undefined;
+		// If agent events arrived while these requests were in flight, the live state is newer than
+		// the snapshot: keep messages/tools/streaming as the events left them.
+		const live = this.evSeq !== seq && st.sessionFile === this.state.sessionFile;
 		this.set({
 			model,
 			models: models.models ?? [],
@@ -274,9 +291,7 @@ export class Agent {
 			sessionFile: st.sessionFile,
 			sessionId: st.sessionId,
 			sessionName: st.sessionName,
-			streaming: !!st.isStreaming,
-			messages: (msgs.messages ?? []) as ChatMessage[],
-			tools: {},
+			...(live ? {} : { streaming: !!st.isStreaming, messages: (msgs.messages ?? []) as ChatMessage[], tools: {} }),
 			commands: (cmds.commands ?? []).map((c: any) => ({ name: c.name, description: c.description, source: c.source })),
 		});
 		void this.refreshStats();
@@ -294,13 +309,27 @@ export class Agent {
 	async prompt(text: string, images?: { data: string; mimeType: string }[]) {
 		const msg: Record<string, unknown> = { type: "prompt", message: text };
 		if (images?.length) msg.images = images.map((i) => ({ type: "image", ...i }));
-		if (this.state.streaming && !text.startsWith("/")) msg.streamingBehavior = "steer";
+		// pi only consults this while a run is in progress, and extension commands run before it, so
+		// always sending it avoids "Agent is already processing" when our streaming flag lags.
+		msg.streamingBehavior = "steer";
 		const r = await this.request(msg, 120_000);
 		return r?.disposition as string | undefined;
 	}
 
 	abort() {
+		this.clearDialogs();
 		return this.request({ type: "abort" }).catch(() => {});
+	}
+
+	/** pi resolves a dialog itself on timeout/abort without telling us, so drop ours too. */
+	private clearDialogs(ids?: string[]) {
+		const drop = new Set(ids ?? this.state.dialogs.map((d) => d.id));
+		if (!drop.size) return;
+		for (const id of drop) {
+			clearTimeout(this.dialogTimers.get(id));
+			this.dialogTimers.delete(id);
+		}
+		this.set({ dialogs: this.state.dialogs.filter((d) => !drop.has(d.id)) }, true);
 	}
 
 	async setModel(m: Model) {
@@ -319,6 +348,7 @@ export class Agent {
 	async newSession() {
 		const r = await this.request({ type: "new_session" });
 		if (r?.cancelled) return;
+		this.clearDialogs();
 		await this.refresh();
 		this.onSessionChanged?.();
 	}
@@ -326,6 +356,7 @@ export class Agent {
 	async switchSession(path: string) {
 		const r = await this.request({ type: "switch_session", sessionPath: path });
 		if (r?.cancelled) return;
+		this.clearDialogs();
 		await this.refresh();
 	}
 
@@ -341,7 +372,7 @@ export class Agent {
 
 	answer(id: string, reply: { value?: string; confirmed?: boolean; cancelled?: boolean }) {
 		this.send({ type: "extension_ui_response", id, ...reply });
-		this.set({ dialogs: this.state.dialogs.filter((d) => d.id !== id) }, true);
+		this.clearDialogs([id]);
 	}
 
 	// ---- events ---------------------------------------------------------------------------
@@ -374,10 +405,12 @@ export class Agent {
 	}
 
 	private onEvent(ev: any) {
+		this.evSeq++;
 		switch (ev.type) {
 			case "agent_start":
 				return this.set({ streaming: true, retry: undefined }, true);
 			case "agent_settled":
+				if (ev.aborted) this.clearDialogs();
 				this.set({ streaming: false, retry: undefined }, true);
 				void this.refreshStats();
 				this.onSettled?.();
@@ -397,7 +430,7 @@ export class Agent {
 							content[i] = { type: "text", text: "" };
 							break;
 						case "text_delta":
-							content[i] = { type: "text", text: (cur?.text ?? "") + u.delta };
+							content[i] = { type: "text", text: (cur?.text ?? "") + (typeof u.delta === "string" ? u.delta : "") };
 							break;
 						case "text_end":
 							content[i] = { type: "text", text: typeof u.content === "string" ? u.content : (cur?.text ?? "") };
@@ -406,7 +439,7 @@ export class Agent {
 							content[i] = { type: "thinking", thinking: "" };
 							break;
 						case "thinking_delta":
-							content[i] = { type: "thinking", thinking: (cur?.thinking ?? "") + u.delta };
+							content[i] = { type: "thinking", thinking: (cur?.thinking ?? "") + (typeof u.delta === "string" ? u.delta : "") };
 							break;
 						case "thinking_end":
 							content[i] = { type: "thinking", thinking: typeof u.content === "string" ? u.content : (cur?.thinking ?? "") };
@@ -451,7 +484,14 @@ export class Agent {
 				return this.set({ compacting: true }, true);
 			case "compaction_end":
 				this.set({ compacting: false }, true);
-				void this.request({ type: "get_messages" }).then((r) => this.set({ messages: r.messages ?? [] }, true));
+				{
+					const seq = this.evSeq;
+					void this.request({ type: "get_messages" })
+						.then((r) => {
+							if (this.evSeq === seq) this.set({ messages: r.messages ?? [] }, true);
+						})
+						.catch(() => {});
+				}
 				return;
 			case "auto_retry_start": {
 				// pi drops the failed attempt from the conversation before retrying (get_messages won't
@@ -481,8 +521,10 @@ export class Agent {
 			case "select":
 			case "confirm":
 			case "input":
-			case "editor":
+			case "editor": {
+				if (ev.timeout > 0) this.dialogTimers.set(ev.id, setTimeout(() => this.clearDialogs([ev.id]), ev.timeout));
 				return this.set({ dialogs: [...this.state.dialogs, ev as UiRequest] }, true);
+			}
 			case "notify":
 				return this.notify({ id: ++noticeSeq, text: stripAnsi(ev.message ?? ""), tone: ev.notifyType ?? "info" });
 			case "setStatus": {

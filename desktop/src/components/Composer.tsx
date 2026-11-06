@@ -46,7 +46,8 @@ export function Composer({
 	statuses: Record<string, string>;
 	stats?: Stats;
 	supportsImages: boolean;
-	onSend: (text: string, images: Attachment[]) => void;
+	/** Resolves false when the message was not accepted; the composer then restores it. */
+	onSend: (text: string, images: Attachment[]) => Promise<boolean> | boolean | void;
 	onAbort: () => void;
 	focusKey?: unknown;
 }) {
@@ -102,9 +103,15 @@ export function Composer({
 	const submit = () => {
 		const t = text.trim();
 		if ((!t && !images.length) || disabled) return;
-		onSend(t, images);
+		const sentImages = images;
 		setText("");
 		setImages([]);
+		void Promise.resolve(onSend(t, sentImages)).then((ok) => {
+			if (ok !== false) return;
+			// Put the message back unless the user already started typing something new.
+			setText((cur) => cur || t);
+			setImages((cur) => (cur.length ? cur : sentImages));
+		});
 	};
 
 	const addFiles = async (files: FileList | File[]) => {
@@ -177,17 +184,25 @@ export function Composer({
 						disabled={disabled}
 						onChange={(e) => setText(e.target.value)}
 						onCompositionStart={() => (composing.current = true)}
-						onCompositionEnd={() => (composing.current = false)}
+						onCompositionEnd={() => {
+							// WebKit fires compositionend before the Enter keydown that confirmed the
+							// candidate; keep the guard up until that keydown has passed.
+							setTimeout(() => (composing.current = false), 0);
+						}}
 						onPaste={(e) => {
 							if (!supportsImages) return;
-							const files = [...e.clipboardData.files];
-							if (files.some((f) => f.type.startsWith("image/"))) {
+							// Screenshots pasted in WKWebView may only show up in items, not files.
+							const files = [...e.clipboardData.items]
+								.filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+								.map((it) => it.getAsFile())
+								.filter((f): f is File => !!f);
+							if (files.length) {
 								e.preventDefault();
 								void addFiles(files);
 							}
 						}}
 						onKeyDown={(e) => {
-							if (composing.current || e.nativeEvent.isComposing) return;
+							if (composing.current || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
 							if (slash.length) {
 								if (e.key === "ArrowDown") {
 									e.preventDefault();
@@ -235,7 +250,12 @@ export function Composer({
 						</div>
 						{supportsImages && (
 							<>
-								<input ref={file} type="file" accept="image/*" multiple hidden onChange={(e) => e.target.files && void addFiles(e.target.files)} />
+								<input ref={file} type="file" accept="image/*" multiple hidden onChange={(e) => {
+										const input = e.currentTarget;
+										if (input.files) void addFiles([...input.files]);
+										input.value = ""; // allow picking the same file again
+									}}
+								/>
 								<button className="icon-btn" title="添加图片" onClick={() => file.current?.click()} disabled={disabled}>
 									<IconImage />
 								</button>

@@ -52,6 +52,8 @@ export function App() {
 	const lastAccountRefresh = useRef(0);
 	const scroller = useRef<HTMLDivElement>(null);
 	const stick = useRef(true);
+	const lastTop = useRef(0);
+	const agentRef = useRef<Agent | undefined>(undefined);
 
 	const toast = useCallback((n: Omit<Notice, "id"> & { id?: number }) => {
 		const id = n.id ?? Date.now() + Math.random();
@@ -145,10 +147,13 @@ export function App() {
 	}, [checkUpdate]);
 
 	// ---- projects & agent -----------------------------------------------------------------
+	// The project whose sessions the sidebar should show; responses for any other cwd are stale.
+	const currentCwd = useRef<string | undefined>(undefined);
 	const refreshSessions = useCallback(async (cwd?: string) => {
 		if (!cwd) return setSessions([]);
 		try {
-			setSessions(await api.sessions(cwd));
+			const list = await api.sessions(cwd);
+			if (cwd === currentCwd.current) setSessions(list);
 		} catch {
 			/* keep the old list */
 		}
@@ -160,7 +165,9 @@ export function App() {
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			a.onSessionChanged = () => {
 				clearTimeout(timer);
-				timer = setTimeout(() => void refreshSessions(cwd), 400);
+				timer = setTimeout(() => {
+					if (agentRef.current === a) void refreshSessions(cwd);
+				}, 400);
 			};
 			a.onSettled = () => {
 				if (Date.now() - lastAccountRefresh.current > 15_000) void refreshAccount();
@@ -169,6 +176,9 @@ export function App() {
 				void old?.dispose();
 				return a;
 			});
+			agentRef.current = a;
+			currentCwd.current = cwd;
+			stick.current = true;
 			void a.start(sessionPath);
 			return a;
 		},
@@ -182,7 +192,7 @@ export function App() {
 		void refreshSessions(project.path);
 	}, [env, project?.path]);
 
-	useEffect(() => () => void agent?.dispose(), []);
+	useEffect(() => () => void agentRef.current?.dispose(), []);
 
 	const restartAgent = useCallback(() => {
 		if (!project) return;
@@ -242,17 +252,21 @@ export function App() {
 
 	const send = useCallback(
 		async (text: string, images: { data: string; mimeType: string }[]) => {
-			if (!agent) return;
+			if (!agent) return false;
 			stick.current = true;
 			try {
 				const d = await agent.prompt(text, images);
 				if (d === "handled") void agent.refresh();
+				return true;
 			} catch (e) {
 				toast({ text: (e as Error).message, tone: "error" });
+				return false;
 			}
 		},
 		[agent, toast],
 	);
+
+	const onThreadAction = useCallback((a: "recharge" | "login") => setDialog(a === "recharge" ? "recharge" : "login"), []);
 
 	// ---- keyboard -------------------------------------------------------------------------
 	useEffect(() => {
@@ -364,7 +378,7 @@ export function App() {
 			</div>
 		);
 	} else {
-		body = <Thread messages={messages} tools={st.tools} streaming={streaming} cwd={project.path} onAction={(a) => setDialog(a === "recharge" ? "recharge" : "login")} />;
+		body = <Thread messages={messages} tools={st.tools} streaming={streaming} cwd={project.path} onAction={onThreadAction} />;
 	}
 
 	let placeholder = "描述你想做的事…";
@@ -466,9 +480,17 @@ export function App() {
 				<div
 					className="scroll"
 					ref={scroller}
+					onWheel={(e) => {
+						// Release the bottom lock as soon as the user scrolls up, before the next streamed
+						// frame can pull the view back down.
+						if (e.deltaY < 0) stick.current = false;
+					}}
 					onScroll={(e) => {
 						const el = e.currentTarget;
-						stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+						const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+						if (el.scrollTop < lastTop.current - 1) stick.current = atBottom && stick.current;
+						else if (atBottom) stick.current = true;
+						lastTop.current = el.scrollTop;
 					}}
 				>
 					{body}
@@ -484,7 +506,7 @@ export function App() {
 					statuses={st?.statuses ?? {}}
 					stats={st?.stats}
 					supportsImages={!!st?.model?.input?.includes("image")}
-					onSend={(t, i) => void send(t, i)}
+					onSend={send}
 					onAbort={() => void agent?.abort()}
 					focusKey={st?.sessionFile}
 				/>
