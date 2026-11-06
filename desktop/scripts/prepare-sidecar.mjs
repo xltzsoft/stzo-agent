@@ -28,6 +28,9 @@ const opt = (n) => {
 };
 const win = process.platform === "win32";
 const sh = (cmd, args, o = {}) => execFileSync(cmd, args, { stdio: "inherit", shell: win, ...o });
+// On Windows, Git Bash puts GNU tar first on PATH, which treats "D:\\..." as a remote host.
+// The system bsdtar handles both zip and tgz with drive-letter paths.
+const TAR = win ? join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe") : "tar";
 
 function hostTriple() {
 	const out = execFileSync("rustc", ["-vV"], { encoding: "utf8" });
@@ -87,7 +90,7 @@ async function prepareNode() {
 	rmSync(tmp, { recursive: true, force: true });
 	mkdirSync(tmp, { recursive: true });
 	// bsdtar (macOS, Windows 10+) also reads zip files.
-	sh("tar", ["-xf", archive, "-C", tmp]);
+	execFileSync(TAR, ["-xf", archive, "-C", tmp], { stdio: "inherit" });
 	const src = exe ? join(tmp, base, "node.exe") : join(tmp, base, "bin", "node");
 	mkdirSync(dirname(out), { recursive: true });
 	copyFileSync(src, out);
@@ -139,7 +142,7 @@ function prepareApp() {
 	const tmp = join(cache, "app-x");
 	rmSync(tmp, { recursive: true, force: true });
 	mkdirSync(tmp, { recursive: true });
-	sh("tar", ["-xzf", tgz, "-C", tmp]);
+	execFileSync(TAR, ["-xzf", tgz, "-C", tmp], { stdio: "inherit" });
 	rmSync(app, { recursive: true, force: true });
 	renameSync(join(tmp, "package"), app);
 	rmSync(tmp, { recursive: true, force: true });
