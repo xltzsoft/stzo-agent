@@ -14,5 +14,5 @@ ssh "$HOST" 'set -e
   systemctl daemon-reload
   systemctl enable --now stzo-agent-bridge
   systemctl restart stzo-agent-bridge
-  sleep 1
+  sleep 3
   curl -fsS http://127.0.0.1:3090/agent/api/health && echo'
