@@ -95,3 +95,33 @@ export const IconMoon = (p: SVGProps<SVGSVGElement>) => (
 		<path d="M13 9.5A5.5 5.5 0 1 1 6.5 3a4.5 4.5 0 0 0 6.5 6.5z" />
 	</svg>
 );
+export const IconRetry = (p: SVGProps<SVGSVGElement>) => (
+	<svg {...base(p)}>
+		<path d="M3 8a5 5 0 1 0 1.6-3.7M3 3v2.8h2.8" />
+	</svg>
+);
+export const IconEdit = (p: SVGProps<SVGSVGElement>) => (
+	<svg {...base(p)}>
+		<path d="M10.5 3.5 12.5 5.5 6 12H4v-2zM9.5 4.5l2 2" />
+	</svg>
+);
+export const IconBranch = (p: SVGProps<SVGSVGElement>) => (
+	<svg {...base(p)}>
+		<circle cx="5" cy="4" r="1.4" />
+		<circle cx="5" cy="12" r="1.4" />
+		<circle cx="11" cy="6" r="1.4" />
+		<path d="M5 5.4v5.2M11 7.4c0 2.2-2 3-6 3.6" />
+	</svg>
+);
+export const IconSearch = (p: SVGProps<SVGSVGElement>) => (
+	<svg {...base(p)}>
+		<circle cx="7" cy="7" r="4" />
+		<path d="m10 10 3 3" />
+	</svg>
+);
+export const IconFile = (p: SVGProps<SVGSVGElement>) => (
+	<svg {...base(p)}>
+		<path d="M4 2.5h5l3 3v8H4z" />
+		<path d="M9 2.5v3h3" />
+	</svg>
+);

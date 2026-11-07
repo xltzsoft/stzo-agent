@@ -1,24 +1,24 @@
 /**
  * Confirm Destructive Actions Extension
  *
- * Prompts for confirmation before destructive session actions (clear, switch, branch).
- * Demonstrates how to cancel session events using the before_* events.
+ * Prompts for confirmation before leaving the current session (new, switch, fork) in the terminal.
+ * The desktop app skips it: there every one of these is an explicit click and the old session stays
+ * in the sidebar, so a second question only gets in the way (and blocks the RPC call until answered).
  */
 
 import type { ExtensionAPI, SessionBeforeSwitchEvent, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 
+const desktop = () => process.env.STZO_DESKTOP === "1";
+
 export default function (pi: ExtensionAPI) {
 	pi.on("session_before_switch", async (event: SessionBeforeSwitchEvent, ctx) => {
-		if (!ctx.hasUI) return;
+		if (!ctx.hasUI || desktop()) return;
 
 		if (event.reason === "new") {
-			const confirmed = await ctx.ui.confirm(
-				"Clear session?",
-				"This will delete all messages in the current session.",
-			);
+			const confirmed = await ctx.ui.confirm("Start a new session?", "The current session is kept and can be resumed later.");
 
 			if (!confirmed) {
-				ctx.ui.notify("Clear cancelled", "info");
+				ctx.ui.notify("New session cancelled", "info");
 				return { cancel: true };
 			}
 			return;
@@ -44,7 +44,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_before_fork", async (event, ctx) => {
-		if (!ctx.hasUI) return;
+		if (!ctx.hasUI || desktop()) return;
 
 		const choice = await ctx.ui.select(`Fork from entry ${event.entryId.slice(0, 8)}?`, [
 			"Yes, create fork",

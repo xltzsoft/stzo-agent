@@ -1,6 +1,6 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { errorText, type Block, type ChatMessage, type ToolRun } from "../lib/rpc";
-import { IconChevron, IconChevronRight } from "./icons";
+import { IconChevron, IconChevronRight, IconCopy, IconEdit, IconRetry } from "./icons";
 import { Markdown } from "./Markdown";
 
 const rel = (p: unknown, cwd: string) => {
@@ -131,7 +131,7 @@ function DiffView({ diff }: { diff: string }) {
 	);
 }
 
-function ToolStep({ call, run, cwd }: { call: Extract<Block, { type: "toolCall" }>; run?: ToolRun; cwd: string }) {
+function ToolStep({ call, run, cwd, onCopy }: { call: Extract<Block, { type: "toolCall" }>; run?: ToolRun; cwd: string; onCopy?: (t: string) => void }) {
 	const [open, setOpen] = useState(false);
 	const args = partialArgs(call);
 	const s = summarize(call.name, args, run, cwd);
@@ -156,6 +156,15 @@ function ToolStep({ call, run, cwd }: { call: Extract<Block, { type: "toolCall" 
 			</button>
 			{open && (
 				<div className="step-body">
+					{onCopy && (out || diff || args.command) && (
+						<button
+							className="step-copy"
+							title="复制"
+							onClick={() => onCopy([args.command ? `$ ${args.command}` : "", diff || out].filter(Boolean).join("\n"))}
+						>
+							<IconCopy width={13} />
+						</button>
+					)}
 					{(call.name === "bash" || call.name === "powershell") && <div className="cmd selectable">{String(args.command ?? "")}</div>}
 					{diff ? (
 						<DiffView diff={diff} />
@@ -204,12 +213,14 @@ const AssistantMessage = memo(function AssistantMessage({
 	cwd,
 	live,
 	onAction,
+	onCopy,
 }: {
 	msg: ChatMessage;
 	tools: Record<string, ToolRun>;
 	cwd: string;
 	live: boolean;
 	onAction: (a: "recharge" | "login") => void;
+	onCopy?: (t: string) => void;
 }) {
 	const blocks = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content ?? "") } as Block];
 	// Group consecutive tool calls into one timeline.
@@ -229,7 +240,7 @@ const AssistantMessage = memo(function AssistantMessage({
 					return (
 						<div className="trace" key={i}>
 							{g.map((c: any) => (
-								<ToolStep key={c.id || i} call={c} run={tools[c.id]} cwd={cwd} />
+								<ToolStep key={c.id || i} call={c} run={tools[c.id]} cwd={cwd} onCopy={onCopy} />
 							))}
 						</div>
 					);
@@ -267,34 +278,238 @@ const AssistantMessage = memo(function AssistantMessage({
 	a.cwd === b.cwd &&
 	a.live === b.live &&
 	a.onAction === b.onAction &&
+	a.onCopy === b.onCopy &&
 	toolCallIds(b.msg).every((id) => a.tools[id] === b.tools[id]));
 
-function UserMessage({ msg }: { msg: ChatMessage }) {
+const UserMessage = memo(function UserMessage({
+	msg,
+	busy,
+	onCopy,
+	onEdit,
+}: {
+	msg: ChatMessage;
+	busy: boolean;
+	onCopy?: (t: string) => void;
+	onEdit?: (m: ChatMessage) => void;
+}) {
 	const images = Array.isArray(msg.content) ? (msg.content.filter((b) => b.type === "image") as Extract<Block, { type: "image" }>[]) : [];
+	const text = textBlocks(msg.content);
 	return (
 		<div className="turn-user">
 			<div className="bubble selectable">
-				{textBlocks(msg.content)}
+				{text}
 				{images.map((im, i) => (
 					<img key={i} src={`data:${im.mimeType};base64,${im.data}`} alt="" />
 				))}
 			</div>
+			{(onCopy || onEdit) && (
+				<div className="msg-actions">
+					{onCopy && text && (
+						<button title="复制" aria-label="复制" onClick={() => onCopy(text)}>
+							<IconCopy width={13} />
+						</button>
+					)}
+					{onEdit && (
+						<button
+							title={busy ? "当前任务结束后才能编辑" : "从这里重新编辑（原对话保留在历史记录中）"}
+							aria-label="从这里重新编辑"
+							disabled={busy}
+							onClick={() => onEdit(msg)}
+						>
+							<IconEdit width={13} />
+						</button>
+					)}
+				</div>
+			)}
+		</div>
+	);
+});
+
+// ---- turns ---------------------------------------------------------------------------------
+
+export function fmtDuration(ms: number) {
+	const s = Math.max(1, Math.round(ms / 1000));
+	if (s < 60) return `${s} 秒`;
+	const m = Math.floor(s / 60);
+	if (m < 60) return `${m} 分 ${s % 60} 秒`;
+	return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
+}
+
+function RunTimer({ since }: { since?: number }) {
+	const [now, setNow] = useState(Date.now);
+	useEffect(() => {
+		const iv = setInterval(() => setNow(Date.now()), 1000);
+		return () => clearInterval(iv);
+	}, []);
+	const ms = since ? now - since : 0;
+	return (
+		<div className="run-timer" role="status">
+			<span className="spinner" style={{ width: 11, height: 11 }} />
+			<span>{ms >= 1000 ? `已工作 ${fmtDuration(ms)}` : "正在工作"}</span>
 		</div>
 	);
 }
+
+interface FileChange {
+	path: string;
+	adds: number;
+	dels: number;
+	diffs: string[];
+	created: boolean;
+}
+
+/** Files edited or written in a turn, from the edit/write calls that succeeded. */
+function turnChanges(msgs: ChatMessage[], tools: Record<string, ToolRun>, cwd: string): FileChange[] {
+	const byPath = new Map<string, FileChange>();
+	for (const m of msgs) {
+		if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+		for (const b of m.content) {
+			if (b.type !== "toolCall" || (b.name !== "edit" && b.name !== "write")) continue;
+			const run = tools[b.id];
+			if (!run || run.running || run.isError) continue;
+			const path = rel(b.arguments?.path, cwd);
+			if (!path) continue;
+			const fc = byPath.get(path) ?? { path, adds: 0, dels: 0, diffs: [], created: false };
+			if (b.name === "edit") {
+				const diff = typeof run.result?.details?.diff === "string" ? (run.result.details.diff as string) : "";
+				if (diff) {
+					const st = diffStats(diff);
+					fc.adds += st.a;
+					fc.dels += st.d;
+					fc.diffs.push(diff);
+				}
+			} else {
+				const content = typeof b.arguments?.content === "string" ? (b.arguments.content as string) : "";
+				const lines = content ? content.split("\n") : [];
+				fc.adds += lines.length;
+				fc.created = !fc.diffs.length;
+				fc.diffs.push(lines.slice(0, 400).map((l) => `+${l}`).join("\n") + (lines.length > 400 ? "\n..." : ""));
+			}
+			byPath.set(path, fc);
+		}
+	}
+	return [...byPath.values()];
+}
+
+function ChangeCard({ changes }: { changes: FileChange[] }) {
+	const [open, setOpen] = useState(false);
+	const [file, setFile] = useState<string>();
+	const adds = changes.reduce((n, c) => n + c.adds, 0);
+	const dels = changes.reduce((n, c) => n + c.dels, 0);
+	return (
+		<div className={`changes${open ? " open" : ""}`}>
+			<button className="changes-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+				{open ? <IconChevron width={13} /> : <IconChevronRight width={13} />}
+				<span>修改了 {changes.length} 个文件</span>
+				<span className="add">+{adds}</span>
+				<span className="del">−{dels}</span>
+			</button>
+			{open && (
+				<div className="changes-list">
+					{changes.map((c) => (
+						<div key={c.path}>
+							<button className={`change-row${file === c.path ? " on" : ""}`} onClick={() => setFile(file === c.path ? undefined : c.path)} aria-expanded={file === c.path}>
+								<span className="path" title={c.path}>
+									{c.path}
+								</span>
+								{c.created && <span className="tag">新建</span>}
+								<span className="add">+{c.adds}</span>
+								<span className="del">−{c.dels}</span>
+							</button>
+							{file === c.path && c.diffs.map((d, i) => <DiffView key={i} diff={d} />)}
+						</div>
+					))}
+				</div>
+			)}
+		</div>
+	);
+}
+
+const TurnFooter = memo(
+	function TurnFooter({
+		msgs,
+		user,
+		tools,
+		cwd,
+		durationMs,
+		onCopy,
+		onRetry,
+	}: {
+		msgs: ChatMessage[];
+		user?: ChatMessage;
+		tools: Record<string, ToolRun>;
+		cwd: string;
+		durationMs?: number;
+		onCopy?: (t: string) => void;
+		onRetry?: (m: ChatMessage) => void;
+	}) {
+		const changes = useMemo(() => turnChanges(msgs, tools, cwd), [msgs, tools, cwd]);
+		let last: ChatMessage | undefined;
+		let reply = "";
+		for (let i = msgs.length - 1; i >= 0; i--) {
+			if (msgs[i].role !== "assistant") continue;
+			last ??= msgs[i];
+			reply = textBlocks(msgs[i].content).trim();
+			if (reply) break;
+		}
+		const failed = last?.stopReason === "error";
+		if (!user && !changes.length) return null;
+		if (!changes.length && !reply && !failed && !durationMs) return null;
+		return (
+			<div className="turn-foot">
+				{changes.length > 0 && <ChangeCard changes={changes} />}
+				<div className="turn-meta">
+					{durationMs ? <span className="took">用时 {fmtDuration(durationMs)}</span> : null}
+					<span className="msg-actions inline">
+						{onCopy && reply && (
+							<button title="复制回复" aria-label="复制回复" onClick={() => onCopy(reply)}>
+								<IconCopy width={13} />
+							</button>
+						)}
+						{onRetry && user && failed && (
+							<button className="labelled" title="在新分支中重新发送这条消息" onClick={() => onRetry(user)}>
+								<IconRetry width={13} />
+								<span>重试</span>
+							</button>
+						)}
+					</span>
+				</div>
+			</div>
+		);
+	},
+	(a, b) =>
+		a.msgs.length === b.msgs.length &&
+		a.msgs.every((m, i) => m === b.msgs[i]) &&
+		a.user === b.user &&
+		a.durationMs === b.durationMs &&
+		a.cwd === b.cwd &&
+		a.onCopy === b.onCopy &&
+		a.onRetry === b.onRetry &&
+		a.msgs.every((m) => toolCallIds(m).every((id) => a.tools[id] === b.tools[id])),
+);
 
 export function Thread({
 	messages,
 	tools,
 	streaming,
+	runStartedAt,
+	durations,
 	cwd,
 	onAction,
+	onCopy,
+	onEdit,
+	onRetry,
 }: {
 	messages: ChatMessage[];
 	tools: Record<string, ToolRun>;
 	streaming: boolean;
+	runStartedAt?: number;
+	durations?: Record<string, number>;
 	cwd: string;
 	onAction: (a: "recharge" | "login") => void;
+	onCopy?: (t: string) => void;
+	onEdit?: (m: ChatMessage) => void;
+	onRetry?: (m: ChatMessage) => void;
 }) {
 	// Tool results from history (no live run info): synthesize runs from toolResult messages.
 	const allTools = useMemo(() => {
@@ -307,64 +522,94 @@ export function Thread({
 		return { ...map, ...tools };
 	}, [messages, tools]);
 
+	// A turn runs from a user message up to the next one. Its footer (time taken, changed files,
+	// copy/retry) goes after its last message once that turn is no longer running.
+	const turns = useMemo(() => {
+		const ends = new Map<number, { msgs: ChatMessage[]; user?: ChatMessage }>();
+		let start = 0;
+		const close = (end: number) => {
+			const first = messages[start];
+			ends.set(end, { msgs: messages.slice(start, end + 1), user: first?.role === "user" ? first : undefined });
+		};
+		for (let i = 1; i < messages.length; i++) {
+			if (messages[i].role === "user") {
+				close(i - 1);
+				start = i;
+			}
+		}
+		if (messages.length) close(messages.length - 1);
+		return ends;
+	}, [messages]);
+
 	const lastAssistant = messages.length - 1;
+	const footer = (i: number) => {
+		const t = turns.get(i);
+		if (!t || (streaming && i === messages.length - 1)) return null;
+		const ts = t.user?.timestamp;
+		return (
+			<TurnFooter
+				key={`foot-${i}`}
+				msgs={t.msgs}
+				user={t.user}
+				tools={allTools}
+				cwd={cwd}
+				durationMs={ts ? durations?.[String(ts)] : undefined}
+				onCopy={onCopy}
+				onRetry={onRetry}
+			/>
+		);
+	};
+	const render = (m: ChatMessage, i: number) => {
+		switch (m.role) {
+			case "user":
+				return <UserMessage key={i} msg={m} busy={streaming} onCopy={onCopy} onEdit={onEdit} />;
+			case "assistant":
+				return <AssistantMessage key={i} msg={m} tools={allTools} cwd={cwd} live={streaming && i === lastAssistant} onAction={onAction} onCopy={onCopy} />;
+			case "bashExecution":
+				return (
+					<div className="trace" key={i}>
+						<ToolStep
+							call={{ type: "toolCall", id: `bash-${i}`, name: "bash", arguments: { command: m.command } }}
+							run={{ running: false, isError: (m.exitCode ?? 0) !== 0, result: { content: [{ type: "text", text: m.output ?? "" }] } }}
+							cwd={cwd}
+							onCopy={onCopy}
+						/>
+					</div>
+				);
+			case "custom":
+				if (m.display === false) return null;
+				return (
+					<div className="card-note selectable" key={i}>
+						<div>{textBlocks(m.content)}</div>
+					</div>
+				);
+			case "card":
+				return (
+					<div className="card-note selectable" key={i}>
+						<b>{m.data?.title}</b>
+						<div>{(m.data?.lines ?? []).join("\n")}</div>
+					</div>
+				);
+			case "compactionSummary":
+				return (
+					<div className="muted-note" key={i}>
+						较早的对话已压缩为摘要
+					</div>
+				);
+			case "branchSummary":
+				return (
+					<div className="muted-note" key={i}>
+						已从分支返回
+					</div>
+				);
+			default:
+				return null;
+		}
+	};
 	return (
 		<div className="thread">
-			{messages.map((m, i) => {
-				switch (m.role) {
-					case "user":
-						return <UserMessage key={i} msg={m} />;
-					case "assistant":
-						return <AssistantMessage key={i} msg={m} tools={allTools} cwd={cwd} live={streaming && i === lastAssistant} onAction={onAction} />;
-					case "bashExecution":
-						return (
-							<div className="trace" key={i}>
-								<ToolStep
-									call={{ type: "toolCall", id: `bash-${i}`, name: "bash", arguments: { command: m.command } }}
-									run={{ running: false, isError: (m.exitCode ?? 0) !== 0, result: { content: [{ type: "text", text: m.output ?? "" }] } }}
-									cwd={cwd}
-								/>
-							</div>
-						);
-					case "custom":
-						if (m.display === false) return null;
-						return (
-							<div className="card-note selectable" key={i}>
-								<div>{textBlocks(m.content)}</div>
-							</div>
-						);
-					case "card":
-						return (
-							<div className="card-note selectable" key={i}>
-								<b>{m.data?.title}</b>
-								<div>{(m.data?.lines ?? []).join("\n")}</div>
-							</div>
-						);
-					case "compactionSummary":
-						return (
-							<div className="muted-note" key={i}>
-								较早的对话已压缩为摘要
-							</div>
-						);
-					case "branchSummary":
-						return (
-							<div className="muted-note" key={i}>
-								已从分支返回
-							</div>
-						);
-					default:
-						return null;
-				}
-			})}
-			{streaming && messages[messages.length - 1]?.role !== "assistant" && (
-				<div className="assistant">
-					<div className="thinking live">
-						<button disabled>
-							<span className="spinner" style={{ width: 11, height: 11 }} /> 正在处理…
-						</button>
-					</div>
-				</div>
-			)}
+			{messages.flatMap((m, i) => [render(m, i), footer(i)])}
+			{streaming && <RunTimer since={runStartedAt} />}
 		</div>
 	);
 }

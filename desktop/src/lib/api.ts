@@ -108,6 +108,7 @@ export const api = {
 	plugins: () => call<{ plugins: PluginState[] }>("plugins").then((r) => r.plugins),
 	setPlugin: (name: string, on: boolean) => call<{ plugins: PluginState[] }>("plugin-set", [name, on ? "on" : "off"]).then((r) => r.plugins),
 	sessions: (cwd: string) => call<{ sessions: SessionSummary[] }>("sessions", [cwd]).then((r) => r.sessions),
+	files: (cwd: string) => call<{ files: string[] }>("files", [cwd]).then((r) => r.files),
 	version: () => call<{ version: string; server: string; repo: string }>("version"),
 	login: (onDevice: (d: { user_code: string; url: string; expires_in: number }) => void, signal?: AbortSignal) =>
 		call<{ user: User; groups: string[] }>("login", [], {

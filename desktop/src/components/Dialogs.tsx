@@ -192,6 +192,24 @@ export function RechargeDialog({ account, onRedeemed, onClose }: { account?: Acc
 
 // ---------------------------------------------------------------------------------------------
 
+const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+const M = MAC ? "⌘" : "Ctrl";
+const ALT = MAC ? "⌥" : "Alt";
+const SHORTCUTS: [string, string][] = [
+	[`${M} K`, "命令面板：搜索命令、对话、模型"],
+	[`${M} N`, "新对话"],
+	[`${M} O`, "打开项目文件夹"],
+	[`${M} F`, "在对话中查找"],
+	[`${M} B`, "显示或隐藏侧栏"],
+	[`${M} ,`, "设置"],
+	["Enter", "发送；工作中则在下一步插入"],
+	[`${ALT} Enter`, "工作中：等这轮完成后再发送"],
+	["Shift Enter", "换行"],
+	["Esc", "停止当前任务"],
+	["/", "斜杠命令"],
+	["@", "引用项目文件"],
+];
+
 export function SettingsDialog({
 	account,
 	theme,
@@ -280,6 +298,23 @@ export function SettingsDialog({
 									{l}
 								</button>
 							))}
+						</div>
+					</div>
+					<div className="setting shortcuts">
+						<div className="txt">
+							<b>快捷键</b>
+							<dl>
+								{SHORTCUTS.map(([k, d]) => (
+									<div key={d}>
+										<dt>
+											{k.split(" ").map((x, i) => (
+												<kbd key={i}>{x}</kbd>
+											))}
+										</dt>
+										<dd>{d}</dd>
+									</div>
+								))}
+							</dl>
 						</div>
 					</div>
 					<div className="setting">

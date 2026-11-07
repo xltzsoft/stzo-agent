@@ -1,7 +1,8 @@
 // JSON-lines API for the desktop app. Every call prints one or more JSON objects (one per line)
 // and exits. Errors are printed as {"ok":false,"error":"..."} with exit code 0 so the UI can show them.
-import { realpathSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { readdirSync, realpathSync } from "node:fs";
+import { join, relative } from "node:path";
 import { BridgeError, getConfig, getShop, loadAccount, logout, redeem, refreshMe, startDeviceLogin, waitForDeviceApproval } from "./account.ts";
 import { AGENT_DIR, BRAND, VERSION, readJson, writeJson } from "./brand.ts";
 import { PLUGIN_INFO } from "./plugin-info.ts";
@@ -21,6 +22,45 @@ function publicAccount() {
 		user: a.user,
 		groups: a.keys.map((k) => ({ id: k.group_id, name: k.group_name, platform: k.platform, rate: k.rate_multiplier ?? 1, provider: `stzo-g${k.group_id}` })),
 	};
+}
+
+const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", "target", ".next", ".venv", "venv", "__pycache__", ".cache", "coverage", ".idea", ".vscode"]);
+
+/** Project files for @-mentions: git's view when available (respects .gitignore), else a bounded walk. */
+function listFiles(cwd: string, limit = 20000): string[] {
+	try {
+		const out = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+			cwd,
+			encoding: "utf8",
+			maxBuffer: 64 * 1024 * 1024,
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 8000,
+		});
+		const files = out.split("\0").filter(Boolean);
+		if (files.length) return files.slice(0, limit);
+	} catch {
+		/* not a git repo, or git missing */
+	}
+	const files: string[] = [];
+	const walk = (dir: string, depth: number) => {
+		if (files.length >= limit || depth > 12) return;
+		let entries;
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const e of entries) {
+			if (files.length >= limit) return;
+			if (e.name.startsWith(".") && e.name !== ".github") continue;
+			const full = join(dir, e.name);
+			if (e.isDirectory()) {
+				if (!SKIP_DIRS.has(e.name)) walk(full, depth + 1);
+			} else if (e.isFile()) files.push(relative(cwd, full).split("\\").join("/"));
+		}
+	};
+	walk(cwd, 0);
+	return files;
 }
 
 function plugins() {
@@ -82,6 +122,10 @@ export async function desktopApi(args: string[]) {
 			case "plugin-set":
 				setPlugin(rest[0] ?? "", rest[1] === "on");
 				return emit({ ok: true, plugins: plugins() });
+			case "files": {
+				const cwd = rest[0] || process.cwd();
+				return emit({ ok: true, files: listFiles(cwd) });
+			}
 			case "sessions": {
 				const { SessionManager } = await import("@earendil-works/pi-coding-agent");
 				// Sessions are keyed by the resolved cwd (e.g. /tmp → /private/tmp on macOS), same as the agent sees it.

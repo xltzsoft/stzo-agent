@@ -9,6 +9,7 @@
 		"opener:default",
 		"opener:allow-open-url",
 		"dialog:default",
+		"notification:default",
 		"updater:default",
 		"process:allow-restart",
 		"window-state:default"

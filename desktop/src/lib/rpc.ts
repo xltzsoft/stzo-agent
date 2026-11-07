@@ -107,6 +107,17 @@ export interface AgentState {
 	editorText?: { text: string; seq: number };
 	stats?: Stats;
 	commands: Command[];
+	/** When the current run started (agent_start), for the live "已工作 Ns" label. */
+	runStartedAt?: number;
+}
+
+export interface SettledInfo {
+	aborted: boolean;
+	durationMs?: number;
+	/** Timestamp of the user message that started the run, to attach the duration to its turn. */
+	userTimestamp?: number;
+	error?: string;
+	reply?: string;
 }
 
 const ANSI = /\u001b\[[0-9;]*[A-Za-z]|\u001b\][^\u0007]*\u0007/g;
@@ -141,7 +152,7 @@ export class Agent {
 	/** Bumped on every agent event; lets snapshot requests detect that live events overtook them. */
 	private evSeq = 0;
 	private dialogTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	onSettled?: () => void;
+	onSettled?: (info: SettledInfo) => void;
 	onSessionChanged?: () => void;
 
 	constructor(
@@ -316,9 +327,64 @@ export class Agent {
 		return r?.disposition as string | undefined;
 	}
 
-	abort() {
+	/** Stop everything: queued messages first (so they can't start a new turn), a pending retry, a
+	 *  running shell command, then the run itself. */
+	async abort() {
 		this.clearDialogs();
-		return this.request({ type: "abort" }).catch(() => {});
+		const quiet = (cmd: Record<string, unknown>) => this.request(cmd, 10_000).catch(() => {});
+		const q = this.state.queue;
+		if (q.steering.length || q.followUp.length) await quiet({ type: "clear_queue" });
+		this.set({ queue: { steering: [], followUp: [] } }, true);
+		const jobs: Promise<unknown>[] = [];
+		if (this.state.retry) jobs.push(quiet({ type: "abort_retry" }));
+		if (Object.values(this.state.tools).some((t) => t.running)) jobs.push(quiet({ type: "abort_bash" }));
+		jobs.push(quiet({ type: "abort" }));
+		await Promise.all(jobs);
+	}
+
+	/** Queue a message for after the current run (instead of steering into it). */
+	async followUp(text: string, images?: { data: string; mimeType: string }[]) {
+		const msg: Record<string, unknown> = { type: "follow_up", message: text };
+		if (images?.length) msg.images = images.map((i) => ({ type: "image", ...i }));
+		await this.request(msg, 120_000);
+	}
+
+	/** Remove one queued message (pi has no per-item delete: clear, then re-queue the rest). */
+	async removeQueued(kind: "steering" | "followUp", index: number): Promise<string | undefined> {
+		const r = await this.request<{ steering: string[]; followUp: string[] }>({ type: "clear_queue" });
+		const steering = [...(r?.steering ?? [])];
+		const followUp = [...(r?.followUp ?? [])];
+		const list = kind === "steering" ? steering : followUp;
+		const [removed] = list.splice(index, 1);
+		for (const m of steering) await this.request({ type: "steer", message: m }).catch(() => {});
+		for (const m of followUp) await this.request({ type: "follow_up", message: m }).catch(() => {});
+		return removed;
+	}
+
+	/** pi entry id of a user message on the current branch, matched by its timestamp (text as fallback). */
+	async userEntryId(timestamp: number | undefined, text: string): Promise<string | undefined> {
+		const r = await this.request<{ entries: any[]; leafId?: string }>({ type: "get_entries" });
+		const byId = new Map((r?.entries ?? []).map((e: any) => [e.id, e]));
+		const branch: any[] = [];
+		for (let id = r?.leafId, guard = 0; id && guard < 100_000; guard++) {
+			const e = byId.get(id);
+			if (!e) break;
+			branch.push(e);
+			id = e.parentId;
+		}
+		const users = branch.filter((e) => e.type === "message" && e.message?.role === "user");
+		const msgText = (c: any) => (typeof c === "string" ? c : Array.isArray(c) ? c.map((b: any) => b?.text ?? "").join("") : "");
+		return (users.find((e) => timestamp && e.message.timestamp === timestamp) ?? users.find((e) => msgText(e.message.content) === text))?.id;
+	}
+
+	/** Branch into a new session that ends just before the given user message; returns its text. */
+	async forkBefore(entryId: string): Promise<string | undefined> {
+		const r = await this.request<{ text?: string; cancelled?: boolean }>({ type: "fork", entryId });
+		if (r?.cancelled) return undefined;
+		this.clearDialogs();
+		await this.refresh();
+		this.onSessionChanged?.();
+		return r?.text ?? "";
 	}
 
 	/** pi resolves a dialog itself on timeout/abort without telling us, so drop ours too. */
@@ -406,16 +472,38 @@ export class Agent {
 
 	private onEvent(ev: any) {
 		this.evSeq++;
+		// Calls a tool made through ctx.executeTool() belong to their parent step; don't show them.
+		if (ev.parentToolCallId && typeof ev.type === "string" && ev.type.startsWith("tool_execution_")) return;
 		switch (ev.type) {
 			case "agent_start":
-				return this.set({ streaming: true, retry: undefined }, true);
-			case "agent_settled":
+				return this.set({ streaming: true, retry: undefined, runStartedAt: this.state.runStartedAt ?? Date.now() }, true);
+			case "agent_settled": {
 				if (ev.aborted) this.clearDialogs();
-				this.set({ streaming: false, retry: undefined }, true);
+				const started = this.state.runStartedAt;
+				const msgs = this.state.messages;
+				let userTimestamp: number | undefined;
+				let last: ChatMessage | undefined;
+				for (let i = msgs.length - 1; i >= 0; i--) {
+					if (!last && msgs[i].role === "assistant") last = msgs[i];
+					if (msgs[i].role === "user") {
+						userTimestamp = msgs[i].timestamp;
+						break;
+					}
+				}
+				// pi may not send a final queue_update; nothing can still be queued once settled.
+				this.set({ streaming: false, retry: undefined, runStartedAt: undefined, queue: { steering: [], followUp: [] } }, true);
 				void this.refreshStats();
-				this.onSettled?.();
+				const reply = last && Array.isArray(last.content) ? last.content.filter((b) => b.type === "text").map((b: any) => b.text).join("") : "";
+				this.onSettled?.({
+					aborted: !!ev.aborted || last?.stopReason === "aborted",
+					durationMs: started ? Date.now() - started : undefined,
+					userTimestamp,
+					error: last?.stopReason === "error" ? errorText(last.errorMessage) : undefined,
+					reply,
+				});
 				this.onSessionChanged?.();
 				return;
+			}
 			case "message_start":
 				return this.set({ messages: [...this.state.messages, { ...ev.message, content: Array.isArray(ev.message.content) ? [...ev.message.content] : ev.message.content }] });
 			case "message_update": {

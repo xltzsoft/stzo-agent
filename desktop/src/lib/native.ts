@@ -140,3 +140,37 @@ export async function appVersion(): Promise<string> {
 	const { getVersion } = await import("@tauri-apps/api/app");
 	return getVersion();
 }
+
+/** System notification (used when a run finishes while the window is in the background). */
+export async function notifyDesktop(title: string, body: string) {
+	try {
+		if (isTauri) {
+			const n = await import("@tauri-apps/plugin-notification");
+			let ok = await n.isPermissionGranted();
+			if (!ok) ok = (await n.requestPermission()) === "granted";
+			if (ok) n.sendNotification({ title, body });
+			return;
+		}
+		if (typeof Notification !== "undefined" && Notification.permission === "granted") new Notification(title, { body });
+		else console.info("[notify]", title, body);
+	} catch {
+		/* notifications are best effort */
+	}
+}
+
+export async function copyText(text: string): Promise<boolean> {
+	try {
+		await navigator.clipboard.writeText(text);
+		return true;
+	} catch {
+		const ta = document.createElement("textarea");
+		ta.value = text;
+		ta.style.position = "fixed";
+		ta.style.opacity = "0";
+		document.body.appendChild(ta);
+		ta.select();
+		const ok = document.execCommand("copy");
+		ta.remove();
+		return ok;
+	}
+}
