@@ -9,9 +9,11 @@
 // Zero dependencies; Node >= 18.
 
 import { createHash, randomBytes, randomInt } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -511,11 +513,23 @@ async function getDesktopManifest() {
 		const name = String(entry.url || "").split("/").pop();
 		if (SAFE_ASSET.test(name)) entry.url = `${cfg.publicBase}${cfg.mount}/dl/${rel.tag_name}/${name}`;
 	}
+	const fresh = desktopCache.data?.version !== json.version;
 	desktopCache = { at: Date.now(), data: json };
+	if (fresh) {
+		// Mirror the update bundles now so the first client to update doesn't wait on (or fail on)
+		// a cold download from GitHub.
+		for (const entry of Object.values(json.platforms)) {
+			const name = String(entry.url || "").split("/").pop();
+			if (SAFE_ASSET.test(name)) void mirrorAsset(rel.tag_name, name).catch((err) => log(`ota: prewarm ${name} failed:`, err.message));
+		}
+	}
 	return json;
 }
 
 const inflightDownloads = new Map();
+const githubAssetUrl = (tag, name) =>
+	`https://github.com/${cfg.githubRepo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`;
+
 async function mirrorAsset(tag, name) {
 	if (!/^v?[0-9A-Za-z._-]{1,40}$/.test(tag) || !SAFE_ASSET.test(name)) return undefined;
 	const dir = join(cfg.dataDir, "releases", tag);
@@ -524,19 +538,34 @@ async function mirrorAsset(tag, name) {
 	const key = `${tag}/${name}`;
 	if (inflightDownloads.has(key)) return inflightDownloads.get(key);
 	const p = (async () => {
-		const rel = await gh(`/repos/${cfg.githubRepo}/releases/tags/${encodeURIComponent(tag)}`);
-		const asset = (rel.assets || []).find((a) => a.name === name);
-		if (!asset) return undefined;
-		if (asset.size > 200 * 1024 * 1024) throw new Error("asset too large");
-		const res = await fetch(asset.browser_download_url, { signal: AbortSignal.timeout(300_000) });
-		if (!res.ok) throw new Error(`download ${res.status}`);
-		const buf = Buffer.from(await res.arrayBuffer());
-		mkdirSync(dir, { recursive: true });
-		const tmp = `${file}.tmp`;
-		writeFileSync(tmp, buf);
-		renameSync(tmp, file);
-		log(`ota: mirrored ${key} (${buf.length} bytes)`);
-		return file;
+		// Straight from the release download URL: no GitHub API call (which intermittently
+		// returned 504 here), retried because a cold download is the first update a client sees.
+		let lastErr;
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			try {
+				const res = await fetch(githubAssetUrl(tag, name), { redirect: "follow", signal: AbortSignal.timeout(300_000) });
+				if (res.status === 404) return undefined;
+				if (!res.ok || !res.body) throw new Error(`download ${res.status}`);
+				const size = Number(res.headers.get("content-length") || 0);
+				if (size > 200 * 1024 * 1024) throw new Error("asset too large");
+				mkdirSync(dir, { recursive: true });
+				const tmp = `${file}.${process.pid}.tmp`;
+				await pipeline(Readable.fromWeb(res.body), createWriteStream(tmp));
+				const got = statSync(tmp).size;
+				if (size && got !== size) {
+					rmSync(tmp, { force: true });
+					throw new Error(`short download ${got}/${size}`);
+				}
+				renameSync(tmp, file);
+				log(`ota: mirrored ${key} (${got} bytes)`);
+				return file;
+			} catch (err) {
+				lastErr = err;
+				log(`ota: mirror ${key} attempt ${attempt} failed:`, err.message);
+				if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 2000));
+			}
+		}
+		throw lastErr;
 	})().finally(() => inflightDownloads.delete(key));
 	inflightDownloads.set(key, p);
 	return p;
@@ -795,8 +824,11 @@ async function route(req, res) {
 			if (!file) return fail(res, 404, "not found");
 			return serveFile(req, res, file, { cache: "public, max-age=31536000, immutable", download: true });
 		} catch (err) {
-			log("dl:", err.message);
-			return fail(res, 502, "镜像下载失败，请改用 GitHub 地址");
+			// Mirror unavailable: send the client to GitHub rather than failing the download.
+			// Updater bundles are signature-checked, installers are on the public release anyway.
+			log("dl: mirror failed, redirecting to GitHub:", err.message);
+			res.writeHead(302, { Location: githubAssetUrl(decodeURIComponent(tag || ""), decodeURIComponent(name || "")), "Cache-Control": "no-store" });
+			return res.end();
 		}
 	}
 
