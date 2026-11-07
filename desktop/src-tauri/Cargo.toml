@@ -1,6 +1,6 @@
 [package]
 name = "stzo-agent-desktop"
-version = "0.2.2"
+version = "0.2.3"
 description = "STZO Agent desktop"
 edition = "2021"
 

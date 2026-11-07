@@ -1,6 +1,6 @@
 {
 	"name": "stzo-agent",
-	"version": "0.2.2",
+	"version": "0.2.3",
 	"description": "STZO Agent — 基于 pi coding agent 的二次封装：账号登录、余额充值、兑换码、精选插件与 GitHub OTA 更新",
 	"type": "module",
 	"license": "MIT",
